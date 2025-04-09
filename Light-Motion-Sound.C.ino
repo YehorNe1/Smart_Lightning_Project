@@ -64,7 +64,7 @@ void loop() {
   }
   client.loop();
 
-  // Read PIR sensor continuously
+  // Read PIR sensor continuously and detect changes
   bool currentMotionState = digitalRead(PIR_SENSOR_PIN);
   if (currentMotionState != lastMotionState) {
     lastMotionState = currentMotionState;
@@ -79,7 +79,7 @@ void loop() {
   if (currentTime - lastUpdateTime >= UPDATE_INTERVAL) {
     lastUpdateTime = currentTime;
 
-    // Read and average LDR
+    // Read and average LDR values
     long sumLDR = 0;
     for (int i = 0; i < NUM_READS_LDR; i++) {
       sumLDR += analogRead(LDR_PIN);
@@ -116,26 +116,28 @@ void loop() {
 }
 
 const char* classifyLight(int lightValue) {
+  // Example thresholds
   if (lightValue < 20) {
-    return "Очень темно";
+    return "Very dark";
   } else if (lightValue < 50) {
-    return "Тускло";
+    return "Dim";
   } else if (lightValue < 100) {
-    return "Ярко";
+    return "Bright";
   } else {
-    return "Очень ярко";
+    return "Very bright";
   }
 }
 
 const char* classifySound(double rmsValue) {
+  // Example thresholds
   if (rmsValue < 100) {
-    return "Тишина";
+    return "Silent";
   } else if (rmsValue < 300) {
-    return "Небольшой шум";
+    return "Small noise";
   } else if (rmsValue < 600) {
-    return "Достаточно громко";
+    return "Quite loud";
   } else {
-    return "Очень громко!";
+    return "Very loud!";
   }
 }
 
