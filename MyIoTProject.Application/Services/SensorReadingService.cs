@@ -21,7 +21,7 @@ namespace MyIoTProject.Application.Services
 
             // Example: store if motion detected, or sound is quite/very loud, or light is very bright
             if (motion == "Motion detected!") shouldStore = true;
-            if (sound == "Quite loud" || sound == "Very loud!") shouldStore = true;
+            if (sound == "Very loud!") shouldStore = true;
             if (light == "Very bright") shouldStore = true;
 
             if (!shouldStore)

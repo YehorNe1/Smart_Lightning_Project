@@ -17,8 +17,8 @@ namespace MyIoTProject.Infrastructure.Mqtt
         private readonly IMqttClient _mqttClient;
         private readonly SensorReadingService _sensorReadingService;
 
-        // This event notifies the Presentation layer (WebSocket) about new readings
-        public event EventHandler<ReadingReceivedEventArgs> ReadingReceived; 
+        // Событие: новые данные (light/sound/motion) пришли, отправим на WebSocket
+        public event EventHandler<ReadingReceivedEventArgs>? ReadingReceived;
 
         public MqttClientService(string brokerHost, int brokerPort, string user, string pass,
                                  SensorReadingService sensorReadingService)
@@ -28,19 +28,18 @@ namespace MyIoTProject.Infrastructure.Mqtt
             var factory = new MqttFactory();
             _mqttClient = factory.CreateMqttClient();
 
-            // Configure MQTT client options
+            // Настройки MQTT
             var options = new MqttClientOptionsBuilder()
                 .WithTcpServer(brokerHost, brokerPort)
                 .WithCredentials(user, pass)
                 .WithCleanSession()
                 .Build();
 
-            // Register handlers (newer style with .NET MQTTnet 3+)
             _mqttClient.ConnectedHandler = new MqttClientConnectedHandlerDelegate(OnConnected);
             _mqttClient.DisconnectedHandler = new MqttClientDisconnectedHandlerDelegate(OnDisconnected);
             _mqttClient.ApplicationMessageReceivedHandler = new MqttApplicationMessageReceivedHandlerDelegate(OnMessageReceived);
 
-            // Attempt initial connection
+            // Попытка соединения
             Task.Run(async () =>
             {
                 try
@@ -57,25 +56,22 @@ namespace MyIoTProject.Infrastructure.Mqtt
         private async Task OnConnected(MqttClientConnectedEventArgs e)
         {
             Console.WriteLine("MQTT connected!");
-
-            // Subscribe to three topics when connected
+            // Подпишемся на три топика
             await _mqttClient.SubscribeAsync("house/test_room/light");
             await _mqttClient.SubscribeAsync("house/test_room/sound");
             await _mqttClient.SubscribeAsync("house/test_room/motion");
-
             Console.WriteLine("Subscribed to: light, sound, motion topics.");
         }
 
         private async Task OnDisconnected(MqttClientDisconnectedEventArgs e)
         {
-            Console.WriteLine("MQTT disconnected! Attempting to reconnect...");
+            Console.WriteLine("MQTT disconnected! Trying to reconnect...");
             await Task.Delay(TimeSpan.FromSeconds(5));
             try
             {
-                // Example reconnection logic: create new options or reuse them
                 var options = new MqttClientOptionsBuilder()
                     .WithTcpServer("mqtt.flespi.io", 1883)
-                    .WithCredentials("user", "pass")
+                    .WithCredentials("user", "pass") // <-- Если нужно, замените
                     .WithCleanSession()
                     .Build();
 
@@ -92,42 +88,35 @@ namespace MyIoTProject.Infrastructure.Mqtt
             try
             {
                 string topic = e.ApplicationMessage.Topic;
-                byte[] payloadBytes = e.ApplicationMessage.Payload ?? new byte[0];
-                string payload = Encoding.UTF8.GetString(payloadBytes);
+                string payload = Encoding.UTF8.GetString(e.ApplicationMessage.Payload ?? Array.Empty<byte>());
 
                 Console.WriteLine($"[MQTT] Received on topic '{topic}': {payload}");
 
-                // Determine which sensor produced the data
-                string lightValue = null;
-                string soundValue = null;
-                string motionValue = null;
+                // Узнаём, что это: light, sound или motion
+                string? lightValue = null;
+                string? soundValue = null;
+                string? motionValue = null;
 
                 if (topic.EndsWith("light"))
-                {
                     lightValue = payload;
-                }
                 else if (topic.EndsWith("sound"))
-                {
                     soundValue = payload;
-                }
                 else if (topic.EndsWith("motion"))
-                {
                     motionValue = payload;
-                }
 
-                // Persist to MongoDB using the service (with filtering logic)
+                // Сохраняем в DB (с фильтром)
                 await _sensorReadingService.AddReadingAsync(
                     lightValue ?? "N/A",
                     soundValue ?? "N/A",
                     motionValue ?? "N/A"
                 );
 
-                // Notify any WebSocket subscribers
+                // Уведомим WebSocket (если есть)
                 ReadingReceived?.Invoke(this, new ReadingReceivedEventArgs
                 {
-                    Light = lightValue,
-                    Sound = soundValue,
-                    Motion = motionValue
+                    Light = lightValue ?? "",
+                    Sound = soundValue ?? "",
+                    Motion = motionValue ?? ""
                 });
             }
             catch (Exception ex)
@@ -135,12 +124,25 @@ namespace MyIoTProject.Infrastructure.Mqtt
                 Console.WriteLine($"Error processing MQTT message: {ex.Message}");
             }
         }
+
+        // Публикация команды (Arduino прослушивает "house/test_room/cmd")
+        public void PublishCommand(string payload)
+        {
+            // Топик команд:
+            var topicCmd = "house/test_room/cmd"; 
+            var message = new MqttApplicationMessageBuilder()
+                .WithTopic(topicCmd)
+                .WithPayload(payload)
+                .Build();
+
+            _mqttClient.PublishAsync(message, CancellationToken.None);
+        }
     }
 
     public class ReadingReceivedEventArgs : EventArgs
     {
-        public string? Light { get; set; }
-        public string? Sound { get; set; }
-        public string? Motion { get; set; }
+        public string Light { get; set; } = "";
+        public string Sound { get; set; } = "";
+        public string Motion { get; set; } = "";
     }
 }
