@@ -199,7 +199,7 @@ function App() {
     <>
       <AppBar position="static">
         <Toolbar>
-          <Typography variant="h6">My IoT Dashboard</Typography>
+          <Typography variant="h6">My Dashboard</Typography>
         </Toolbar>
       </AppBar>
 
