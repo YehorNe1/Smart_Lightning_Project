@@ -4,9 +4,9 @@ using System.Threading;
 using System.Threading.Tasks;
 using MQTTnet;
 using MQTTnet.Client;
-using MQTTnet.Client.Options;
 using MQTTnet.Client.Connecting;
 using MQTTnet.Client.Disconnecting;
+using MQTTnet.Client.Options;
 using MQTTnet.Client.Receiving;
 using MyIoTProject.Application.Services;
 
@@ -16,22 +16,30 @@ namespace MyIoTProject.Infrastructure.Mqtt
     {
         private readonly IMqttClient _mqttClient;
         private readonly SensorReadingService _sensorReadingService;
+        private readonly string _brokerHost;
+        private readonly int _brokerPort;
+        private readonly string _user;
+        private readonly string _pass;
 
-        // Событие: новые данные (light/sound/motion) пришли, отправим на WebSocket
-        public event EventHandler<ReadingReceivedEventArgs>? ReadingReceived;
+        // Events for new data, ACK and configuration
+        public event EventHandler<ReadingReceivedEventArgs> ReadingReceived;
+        public event EventHandler<CommandAckReceivedEventArgs> CommandAckReceived;
+        public event EventHandler<ConfigReceivedEventArgs> ConfigReceived;
 
-        public MqttClientService(string brokerHost, int brokerPort, string user, string pass,
-                                 SensorReadingService sensorReadingService)
+        public MqttClientService(string brokerHost, int brokerPort, string user, string pass, SensorReadingService sensorReadingService)
         {
+            _brokerHost = brokerHost;
+            _brokerPort = brokerPort;
+            _user = user;
+            _pass = pass;
             _sensorReadingService = sensorReadingService;
-
+            
             var factory = new MqttFactory();
             _mqttClient = factory.CreateMqttClient();
 
-            // Настройки MQTT
             var options = new MqttClientOptionsBuilder()
-                .WithTcpServer(brokerHost, brokerPort)
-                .WithCredentials(user, pass)
+                .WithTcpServer(_brokerHost, _brokerPort)
+                .WithCredentials(_user, _pass)
                 .WithCleanSession()
                 .Build();
 
@@ -39,7 +47,6 @@ namespace MyIoTProject.Infrastructure.Mqtt
             _mqttClient.DisconnectedHandler = new MqttClientDisconnectedHandlerDelegate(OnDisconnected);
             _mqttClient.ApplicationMessageReceivedHandler = new MqttApplicationMessageReceivedHandlerDelegate(OnMessageReceived);
 
-            // Попытка соединения
             Task.Run(async () =>
             {
                 try
@@ -48,7 +55,7 @@ namespace MyIoTProject.Infrastructure.Mqtt
                 }
                 catch (Exception ex)
                 {
-                    Console.WriteLine($"Initial MQTT connection failed: {ex.Message}");
+                    Console.WriteLine("Initial MQTT connection failed: " + ex.Message);
                 }
             });
         }
@@ -56,11 +63,12 @@ namespace MyIoTProject.Infrastructure.Mqtt
         private async Task OnConnected(MqttClientConnectedEventArgs e)
         {
             Console.WriteLine("MQTT connected!");
-            // Подпишемся на три топика
             await _mqttClient.SubscribeAsync("house/test_room/light");
             await _mqttClient.SubscribeAsync("house/test_room/sound");
             await _mqttClient.SubscribeAsync("house/test_room/motion");
-            Console.WriteLine("Subscribed to: light, sound, motion topics.");
+            await _mqttClient.SubscribeAsync("house/test_room/ack");
+            await _mqttClient.SubscribeAsync("house/test_room/config");
+            Console.WriteLine("Subscribed to: light, sound, motion, ack, config.");
         }
 
         private async Task OnDisconnected(MqttClientDisconnectedEventArgs e)
@@ -70,16 +78,15 @@ namespace MyIoTProject.Infrastructure.Mqtt
             try
             {
                 var options = new MqttClientOptionsBuilder()
-                    .WithTcpServer("mqtt.flespi.io", 1883)
-                    .WithCredentials("user", "pass") // <-- Если нужно, замените
+                    .WithTcpServer(_brokerHost, _brokerPort)
+                    .WithCredentials(_user, _pass)
                     .WithCleanSession()
                     .Build();
-
                 await _mqttClient.ConnectAsync(options, CancellationToken.None);
             }
             catch (Exception ex)
             {
-                Console.WriteLine($"Reconnect failed: {ex.Message}");
+                Console.WriteLine("Reconnect failed: " + ex.Message);
             }
         }
 
@@ -89,52 +96,55 @@ namespace MyIoTProject.Infrastructure.Mqtt
             {
                 string topic = e.ApplicationMessage.Topic;
                 string payload = Encoding.UTF8.GetString(e.ApplicationMessage.Payload ?? Array.Empty<byte>());
+                Console.WriteLine($"[MQTT] Received on '{topic}': {payload}");
 
-                Console.WriteLine($"[MQTT] Received on topic '{topic}': {payload}");
-
-                // Узнаём, что это: light, sound или motion
-                string? lightValue = null;
-                string? soundValue = null;
-                string? motionValue = null;
-
-                if (topic.EndsWith("light"))
-                    lightValue = payload;
-                else if (topic.EndsWith("sound"))
-                    soundValue = payload;
-                else if (topic.EndsWith("motion"))
-                    motionValue = payload;
-
-                // Сохраняем в DB (с фильтром)
-                await _sensorReadingService.AddReadingAsync(
-                    lightValue ?? "N/A",
-                    soundValue ?? "N/A",
-                    motionValue ?? "N/A"
-                );
-
-                // Уведомим WebSocket (если есть)
-                ReadingReceived?.Invoke(this, new ReadingReceivedEventArgs
+                if (topic.EndsWith("ack"))
                 {
-                    Light = lightValue ?? "",
-                    Sound = soundValue ?? "",
-                    Motion = motionValue ?? ""
-                });
+                    CommandAckReceived?.Invoke(this, new CommandAckReceivedEventArgs { AckJson = payload });
+                }
+                else if (topic.EndsWith("config"))
+                {
+                    ConfigReceived?.Invoke(this, new ConfigReceivedEventArgs { ConfigJson = payload });
+                }
+                else
+                {
+                    string lightValue = null;
+                    string soundValue = null;
+                    string motionValue = null;
+                    
+                    if (topic.EndsWith("light"))
+                        lightValue = payload;
+                    else if (topic.EndsWith("sound"))
+                        soundValue = payload;
+                    else if (topic.EndsWith("motion"))
+                        motionValue = payload;
+
+                    await _sensorReadingService.AddReadingAsync(
+                        lightValue ?? "N/A",
+                        soundValue ?? "N/A",
+                        motionValue ?? "N/A"
+                    );
+
+                    ReadingReceived?.Invoke(this, new ReadingReceivedEventArgs
+                    {
+                        Light = lightValue ?? "",
+                        Sound = soundValue ?? "",
+                        Motion = motionValue ?? ""
+                    });
+                }
             }
             catch (Exception ex)
             {
-                Console.WriteLine($"Error processing MQTT message: {ex.Message}");
+                Console.WriteLine("Error in OnMessageReceived: " + ex.Message);
             }
         }
 
-        // Публикация команды (Arduino прослушивает "house/test_room/cmd")
         public void PublishCommand(string payload)
         {
-            // Топик команд:
-            var topicCmd = "house/test_room/cmd"; 
             var message = new MqttApplicationMessageBuilder()
-                .WithTopic(topicCmd)
+                .WithTopic("house/test_room/cmd")
                 .WithPayload(payload)
                 .Build();
-
             _mqttClient.PublishAsync(message, CancellationToken.None);
         }
     }
@@ -144,5 +154,15 @@ namespace MyIoTProject.Infrastructure.Mqtt
         public string Light { get; set; } = "";
         public string Sound { get; set; } = "";
         public string Motion { get; set; } = "";
+    }
+
+    public class CommandAckReceivedEventArgs : EventArgs
+    {
+        public string AckJson { get; set; } = "";
+    }
+
+    public class ConfigReceivedEventArgs : EventArgs
+    {
+        public string ConfigJson { get; set; } = "";
     }
 }
