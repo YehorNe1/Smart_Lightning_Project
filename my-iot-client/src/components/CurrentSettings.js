@@ -2,7 +2,7 @@ import React from 'react';
 import { Paper, Typography, Box } from '@mui/material';
 
 function CurrentSettings({ currentInterval, currentLightTh, currentSoundTh }) {
-  /* Fallbacks so the ranges are still meaningful until the first config comes in */
+
   const lightTh = currentLightTh === 'unknown' ? 100 : Number(currentLightTh);
   const soundTh = currentSoundTh === 'unknown' ? 600 : Number(currentSoundTh);
 

@@ -1,9 +1,6 @@
 import { useState, useEffect, useCallback } from 'react';
 
-/* ------------------------------------------------------------------
- * Helpers for converting categorical strings to numeric points that
- * we plot and for displaying the inverse mapping on the Y‑axis.
- * ------------------------------------------------------------------*/
+
 const CATEGORY_TO_POINT_LIGHT = {
   'Very dark': 10,
   Dim: 30,
@@ -24,8 +21,7 @@ const POINT_TO_LABEL_SOUND = Object.fromEntries(
 );
 const POINT_TO_LABEL_MOTION = { 0: 'No motion', 1: 'Motion' };
 
-/* Factory that creates a common options object and lets you pass a
- * y‑axis tick callback that turns the numeric tick into a label. */
+
 function makeOptions(yTickCb, yMax, additionalY = {}) {
   return (currentTime, timeWindow, annotations) => ({
     responsive: true,
@@ -52,20 +48,20 @@ function makeOptions(yTickCb, yMax, additionalY = {}) {
 }
 
 export default function useSensorData(timeWindow) {
-  /* ---------------------- raw series state ---------------------- */
+
   const [lightData, setLightData] = useState([]);
   const [soundData, setSoundData] = useState([]);
   const [motionData, setMotionData] = useState([]);
   const [annotations, setAnnotations] = useState({});
   const [currentTime, setCurrentTime] = useState(Date.now());
 
-  /* shift X‑axis window every second so the chart scrolls */
+
   useEffect(() => {
     const t = setInterval(() => setCurrentTime(Date.now()), 1000);
     return () => clearInterval(t);
   }, []);
 
-  /* give every chart two initial points so it renders immediately */
+
   useEffect(() => {
     const left = new Date(Date.now() - timeWindow);
     const now = new Date();
@@ -83,11 +79,11 @@ export default function useSensorData(timeWindow) {
     ]);
   }, [timeWindow]);
 
-  /* ------------------- helpers to parse messages ---------------- */
+
   const toPointLight = (s) => CATEGORY_TO_POINT_LIGHT[s] ?? 0;
   const toPointSound = (s) => CATEGORY_TO_POINT_SOUND[s] ?? 0;
 
-  /* -------------------------------------------------------------- */
+
   const handleSensorMessage = useCallback(
     (msg) => {
       const nowTime = Date.now();
@@ -111,12 +107,12 @@ export default function useSensorData(timeWindow) {
     [timeWindow]
   );
 
-  /* Stable helper for external additions of annotations */
+
   const addAnnotation = useCallback((anno) => {
     setAnnotations((prev) => ({ ...prev, [anno.id]: anno.cfg }));
   }, []);
 
-  /* ------------------------ chart options ----------------------- */
+
   const lightChartOptions = makeOptions(
     (v) => POINT_TO_LABEL_LIGHT[v] ?? '',
     100
@@ -133,7 +129,7 @@ export default function useSensorData(timeWindow) {
     { stepSize: 0.5 }
   )(currentTime, timeWindow, annotations);
 
-  /* ------------------------- datasets --------------------------- */
+
   const chartDataLight = {
     datasets: [
       {
