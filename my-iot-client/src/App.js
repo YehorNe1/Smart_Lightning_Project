@@ -3,9 +3,9 @@ import { Container, Snackbar, Alert } from '@mui/material';
 import Navbar from './components/Navbar';
 import CurrentSettings from './components/CurrentSettings';
 import SensorChart from './components/SensorChart';
-import CommandPanel from './components/CommandPanel';
 import useSensorData from './hooks/useSensorData';
 import useWebSocket from './hooks/useWebSocket';
+import CommandPanel from "./components/CommandPanel";
 
 function App() {
   const timeWindow = 30000;
@@ -14,7 +14,8 @@ function App() {
     chartDataLight,
     chartDataSound,
     chartDataMotion,
-    sharedChartOptions,
+    lightChartOptions,
+    soundChartOptions,
     motionChartOptions,
     handleSensorMessage,
     addAnnotation
@@ -52,12 +53,12 @@ function App() {
         <SensorChart
           title="Light Sensor Chart"
           chartData={chartDataLight}
-          chartOptions={sharedChartOptions}
+          chartOptions={lightChartOptions}
         />
         <SensorChart
           title="Sound Sensor Chart"
           chartData={chartDataSound}
-          chartOptions={sharedChartOptions}
+          chartOptions={soundChartOptions}
         />
         <SensorChart
           title="Motion Sensor Chart"
