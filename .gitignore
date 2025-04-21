@@ -14,4 +14,4 @@ obj/
 # ---------- secrets ----------
 .env
 *.Development.json
-wifi_credentials.h
+wifi_credentials.h.DS_Store
