@@ -8,7 +8,6 @@ export default function useWebSocket(url, handleSensorMessage, addAnnotation) {
   const [notificationOpen, setNotificationOpen] = useState(false);
   const [notificationMessage, setNotificationMessage] = useState('');
 
-  /* refs для коллбеков, чтобы их можно было менять без пересоздания WS */
   const sensorCbRef = useRef(handleSensorMessage);
   const addAnnoRef = useRef(addAnnotation);
 
@@ -49,7 +48,7 @@ export default function useWebSocket(url, handleSensorMessage, addAnnotation) {
     setCurrentSoundTh(cfg.soundThreshold);
   }, []);
 
-  /* WS создаётся ОДИН раз (dep: url) */
+  /* WS is created ONCE */
   useEffect(() => {
     const ws = new WebSocket(url);
 
