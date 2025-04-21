@@ -11,3 +11,7 @@ obj/
 *.app
 *.db
 *.cache
+# ---------- secrets ----------
+.env
+*.Development.json
+wifi_credentials.h

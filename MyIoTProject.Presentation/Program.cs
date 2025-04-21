@@ -1,7 +1,6 @@
 ﻿using System;
 using System.Collections.Generic;
 using System.IO;
-using System.Text.Json;
 using Fleck;
 using Microsoft.Extensions.Configuration;
 using MyIoTProject.Application.Services;
@@ -13,142 +12,84 @@ namespace MyIoTProject.Presentation
 {
     class Program
     {
-        private static readonly List<IWebSocketConnection> _allSockets = new List<IWebSocketConnection>();
+        private static readonly List<IWebSocketConnection> _allSockets = new();
 
         static void Main(string[] args)
         {
             Console.WriteLine("Starting MyIoTProject...");
 
-            var config = BuildConfiguration();
+            // ——— Конфиг: appsettings.json + appsettings.Development.json + Env
+            var config = new ConfigurationBuilder()
+                .SetBasePath(Directory.GetCurrentDirectory())
+                .AddJsonFile("appsettings.json",             optional: false, reloadOnChange: true)
+                .AddJsonFile("appsettings.Development.json", optional: true,  reloadOnChange: true)
+                .AddEnvironmentVariables()
+                .Build();
 
-            // Initialize MongoDB repository and service
-            string mongoConnectionString = config["MongoSettings:ConnectionString"];
-            string databaseName = config["MongoSettings:DatabaseName"];
+            // ——— Читаем строку подключения к Mongo
+            string envConn  = Environment.GetEnvironmentVariable("MONGO_CONN");
+            string fileConn = config["MongoSettings:ConnectionString"];
+            Console.WriteLine($"DEBUG: MONGO_CONN env var       = '{envConn}'");
+            Console.WriteLine($"DEBUG: appsettings ConnectionString = '{fileConn}'");
+
+            string mongoConnectionString = envConn ?? fileConn;
+            Console.WriteLine($"DEBUG: Using mongoConnectionString  = '{mongoConnectionString}'");
+
+            // если здесь пусто — файл не прочитался и переменная окружения не задана
+
+            string databaseName   = config["MongoSettings:DatabaseName"];
             string collectionName = config["MongoSettings:CollectionName"];
-            ISensorReadingRepository sensorReadingRepository = 
+
+            var sensorReadingRepository =
                 new SensorReadingRepository(mongoConnectionString, databaseName, collectionName);
             var sensorReadingService = new SensorReadingService(sensorReadingRepository);
 
-            // MQTT settings
+            // ——— MQTT
             string mqttBroker = config["MqttSettings:Broker"];
-            int mqttPort = int.Parse(config["MqttSettings:Port"] ?? "1883");
-            string mqttUser = config["MqttSettings:User"];
-            string mqttPass = config["MqttSettings:Pass"];
-            var mqttClientService = new MqttClientService(mqttBroker, mqttPort, mqttUser, mqttPass, sensorReadingService);
+            int    mqttPort   = int.Parse(config["MqttSettings:Port"] ?? "1883");
 
-            // Subscribe to sensor data
-            mqttClientService.ReadingReceived += (sender, ev) =>
-            {
-                string message = $"{{ \"light\":\"{ev.Light}\", \"sound\":\"{ev.Sound}\", \"motion\":\"{ev.Motion}\" }}";
-                Console.WriteLine("Broadcasting sensor data to WS: " + message);
-                lock (_allSockets)
-                {
-                    foreach (var socket in _allSockets)
-                        socket.Send(message);
-                }
-            };
+            string mqttUser = Environment.GetEnvironmentVariable("MQTT_USER")
+                              ?? config["MqttSettings:User"];
+            string mqttPass = Environment.GetEnvironmentVariable("MQTT_PASS")
+                              ?? config["MqttSettings:Pass"];
 
-            // Subscribe to ACK
-            mqttClientService.CommandAckReceived += (sender, ev) =>
-            {
-                Console.WriteLine("Broadcasting ACK to WS: " + ev.AckJson);
-                lock (_allSockets)
-                {
-                    foreach (var socket in _allSockets)
-                        socket.Send(ev.AckJson);
-                }
-            };
+            var mqttClientService = new MqttClientService(
+                mqttBroker, mqttPort, mqttUser, mqttPass, sensorReadingService);
 
-            // Subscribe to configuration
-            mqttClientService.ConfigReceived += (sender, ev) =>
-            {
-                Console.WriteLine("Broadcasting CONFIG to WS: " + ev.ConfigJson);
-                lock (_allSockets)
-                {
-                    foreach (var socket in _allSockets)
-                        socket.Send(ev.ConfigJson);
-                }
-            };
+            // ——— Пересылаем MQTT → WebSocket
+            mqttClientService.ReadingReceived += (_, ev) => Broadcast(
+                $"{{ \"light\":\"{ev.Light}\", \"sound\":\"{ev.Sound}\", \"motion\":\"{ev.Motion}\" }}");
+            mqttClientService.CommandAckReceived += (_, ev) => Broadcast(ev.AckJson);
+            mqttClientService.ConfigReceived     += (_, ev) => Broadcast(ev.ConfigJson);
 
-            // Start WebSocket server
+            // ——— Запуск WebSocket‑сервера
             string wsHost = config["WebSocketSettings:Host"] ?? "0.0.0.0";
-            int wsPort = int.Parse(config["WebSocketSettings:Port"] ?? "8181");
+            int    wsPort = int.Parse(config["WebSocketSettings:Port"] ?? "8181");
+
             var server = new WebSocketServer($"ws://{wsHost}:{wsPort}");
             server.Start(socket =>
             {
-                socket.OnOpen = () =>
-                {
-                    Console.WriteLine("New WebSocket connection!");
-                    lock (_allSockets) { _allSockets.Add(socket); }
-                };
-                socket.OnClose = () =>
-                {
-                    Console.WriteLine("WebSocket disconnected!");
-                    lock (_allSockets) { _allSockets.Remove(socket); }
-                };
-                socket.OnMessage = (messageStr) =>
-                {
-                    Console.WriteLine("WS client -> .NET: " + messageStr);
-                    try
-                    {
-                        var options = new JsonSerializerOptions { PropertyNameCaseInsensitive = true };
-                        var cmd = JsonSerializer.Deserialize<CommandMessage>(messageStr, options);
-                        if (cmd != null)
-                        {
-                            if (cmd.Command == "getConfig")
-                            {
-                                string payload = "{\"command\":\"getConfig\"}";
-                                mqttClientService.PublishCommand(payload);
-                                Console.WriteLine("Published getConfig");
-                            }
-                            else if (cmd.Command == "setInterval")
-                            {
-                                string payload = $"{{ \"command\":\"setInterval\", \"value\":{cmd.Value} }}";
-                                mqttClientService.PublishCommand(payload);
-                                Console.WriteLine("Published setInterval=" + cmd.Value);
-                            }
-                            else if (cmd.Command == "setLightThreshold")
-                            {
-                                string payload = $"{{ \"command\":\"setLightThreshold\", \"value\":{cmd.Value} }}";
-                                mqttClientService.PublishCommand(payload);
-                                Console.WriteLine("Published setLightThreshold=" + cmd.Value);
-                            }
-                            else if (cmd.Command == "setSoundThreshold")
-                            {
-                                string payload = $"{{ \"command\":\"setSoundThreshold\", \"value\":{cmd.Value} }}";
-                                mqttClientService.PublishCommand(payload);
-                                Console.WriteLine("Published setSoundThreshold=" + cmd.Value);
-                            }
-                            else
-                            {
-                                Console.WriteLine("Unknown command: " + cmd.Command);
-                            }
-                        }
-                    }
-                    catch (Exception ex)
-                    {
-                        Console.WriteLine("Error parsing WS command: " + ex.Message);
-                    }
-                };
+                socket.OnOpen    = () => { lock (_allSockets) _allSockets.Add(socket); };
+                socket.OnClose   = () => { lock (_allSockets) _allSockets.Remove(socket); };
+                socket.OnMessage = msg => mqttClientService.PublishCommand(msg);
             });
 
             Console.WriteLine($"WebSocket server started on ws://{wsHost}:{wsPort}");
-            Console.WriteLine("Press ENTER to stop...");
             Console.ReadLine();
         }
 
-        private static IConfiguration BuildConfiguration()
+        private static void Broadcast(string msg)
         {
-            return new ConfigurationBuilder()
-                .SetBasePath(Directory.GetCurrentDirectory())
-                .AddJsonFile("appsettings.json", optional: true, reloadOnChange: true)
-                .Build();
+            lock (_allSockets)
+            {
+                foreach (var s in _allSockets) s.Send(msg);
+            }
         }
     }
 
     public class CommandMessage
     {
         public string Command { get; set; } = "";
-        public int Value { get; set; }
+        public int    Value   { get; set; }
     }
 }

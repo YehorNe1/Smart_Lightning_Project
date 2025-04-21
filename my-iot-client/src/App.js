@@ -5,9 +5,9 @@ import CurrentSettings from './components/CurrentSettings';
 import SensorChart from './components/SensorChart';
 import useSensorData from './hooks/useSensorData';
 import useWebSocket from './hooks/useWebSocket';
-import CommandPanel from "./components/CommandPanel";
+import CommandPanel from './components/CommandPanel';
 
-function App() {
+export default function App() {
   const timeWindow = 30000;
 
   const {
@@ -29,42 +29,26 @@ function App() {
     notificationOpen,
     notificationMessage,
     handleCloseNotification
-  } = useWebSocket('ws://localhost:8181', handleSensorMessage, addAnnotation);
+  } = useWebSocket(handleSensorMessage, addAnnotation);   // <‑‑ URL берётся из хука
 
-  const [intervalValue, setIntervalValue] = useState('2000');
+  const [intervalValue,       setIntervalValue]       = useState('2000');
   const [lightThresholdValue, setLightThresholdValue] = useState('100');
   const [soundThresholdValue, setSoundThresholdValue] = useState('600');
-
-  const handleSetInterval = () => sendCommand('setInterval', intervalValue);
-  const handleSetLightThreshold = () => sendCommand('setLightThreshold', lightThresholdValue);
-  const handleSetSoundThreshold = () => sendCommand('setSoundThreshold', soundThresholdValue);
 
   return (
     <>
       <Navbar />
 
-      <Container maxWidth="md" style={{ marginTop: 20 }}>
+      <Container maxWidth="md" sx={{ mt: 2 }}>
         <CurrentSettings
           currentInterval={currentInterval}
           currentLightTh={currentLightTh}
           currentSoundTh={currentSoundTh}
         />
 
-        <SensorChart
-          title="Light Sensor Chart"
-          chartData={chartDataLight}
-          chartOptions={lightChartOptions}
-        />
-        <SensorChart
-          title="Sound Sensor Chart"
-          chartData={chartDataSound}
-          chartOptions={soundChartOptions}
-        />
-        <SensorChart
-          title="Motion Sensor Chart"
-          chartData={chartDataMotion}
-          chartOptions={motionChartOptions}
-        />
+        <SensorChart title="Light"  chartData={chartDataLight}  chartOptions={lightChartOptions}  />
+        <SensorChart title="Sound"  chartData={chartDataSound}  chartOptions={soundChartOptions}  />
+        <SensorChart title="Motion" chartData={chartDataMotion} chartOptions={motionChartOptions} />
 
         <CommandPanel
           intervalValue={intervalValue}
@@ -73,9 +57,9 @@ function App() {
           setIntervalValue={setIntervalValue}
           setLightThresholdValue={setLightThresholdValue}
           setSoundThresholdValue={setSoundThresholdValue}
-          handleSetInterval={handleSetInterval}
-          handleSetLightThreshold={handleSetLightThreshold}
-          handleSetSoundThreshold={handleSetSoundThreshold}
+          handleSetInterval       ={() => sendCommand('setInterval',       intervalValue)}
+          handleSetLightThreshold ={() => sendCommand('setLightThreshold', lightThresholdValue)}
+          handleSetSoundThreshold ={() => sendCommand('setSoundThreshold', soundThresholdValue)}
         />
       </Container>
 
@@ -85,12 +69,10 @@ function App() {
         onClose={handleCloseNotification}
         anchorOrigin={{ vertical: 'bottom', horizontal: 'center' }}
       >
-        <Alert onClose={handleCloseNotification} severity="success" sx={{ width: '100%' }}>
+        <Alert severity="success" onClose={handleCloseNotification} sx={{ width: '100%' }}>
           {notificationMessage}
         </Alert>
       </Snackbar>
     </>
   );
 }
-
-export default App;
