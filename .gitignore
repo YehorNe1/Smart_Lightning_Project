@@ -1,0 +1,24 @@
+# macOS
+.DS_Store
+
+# Build artifacts
+bin/
+obj/
+*.exe
+*.dll
+*.pdb
+*.app
+*.db
+*.cache
+
+# IDE / editor files
+*.user
+*.csproj.user
+*.suo
+*.swp
+.vs/
+
+# Secrets and local settings
+.env
+*.Development.json
+wifi_credentials.h
