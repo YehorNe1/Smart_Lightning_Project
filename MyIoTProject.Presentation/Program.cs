@@ -1,12 +1,12 @@
 ﻿using System;
-using System.Collections.Generic;
-using System.IO;
-using System.Net;
+using System.Collections.Concurrent;
+using System.Net.WebSockets;
 using System.Text;
 using System.Threading;
 using System.Threading.Tasks;
-using Fleck;
+using Microsoft.AspNetCore.Builder;
 using Microsoft.Extensions.Configuration;
+using Microsoft.Extensions.Hosting;
 using MyIoTProject.Application.Services;
 using MyIoTProject.Core.Interfaces;
 using MyIoTProject.Infrastructure.Mqtt;
@@ -14,145 +14,99 @@ using MyIoTProject.Infrastructure.Repositories;
 
 namespace MyIoTProject.Presentation
 {
-    class Program
+    public class Program
     {
-        private static readonly List<IWebSocketConnection> _allSockets = new();
+        // Thread-safe collection of active WebSocket connections
+        private static readonly ConcurrentBag<WebSocket> _sockets = new();
 
-        static void Main(string[] args)
+        public static async Task Main(string[] args)
         {
-            Console.WriteLine("Starting MyIoTProject...");
+            // 1) Read PORT environment variable (default to 8181)
+            var port = Environment.GetEnvironmentVariable("PORT") ?? "8181";
 
-            // Read PORT environment variable, default to 8181
-            string portEnv = Environment.GetEnvironmentVariable("PORT") ?? "8181";
-            if (!int.TryParse(portEnv, out int port))
-            {
-                port = 8181;
-            }
+            // 2) Build WebApplication
+            var builder = WebApplication.CreateBuilder(args);
 
-            //
-            // --- Begin simple HTTP listener to answer health checks and port scan ---
-            //
-            var http = new HttpListener();
-            // Listen on all paths under root: GET / and GET /health
-            http.Prefixes.Add($"http://*:{port}/");
-            http.Start();
-            _ = Task.Run(async () =>
-            {
-                while (true)
-                {
-                    var ctx = await http.GetContextAsync();
-                    var path = ctx.Request.Url.AbsolutePath;
-                    if (path.Equals("/health", StringComparison.OrdinalIgnoreCase))
-                    {
-                        // Health check endpoint
-                        ctx.Response.StatusCode = 200;
-                        var data = Encoding.UTF8.GetBytes("OK");
-                        ctx.Response.ContentLength64 = data.Length;
-                        await ctx.Response.OutputStream.WriteAsync(data, 0, data.Length);
-                    }
-                    else
-                    {
-                        // Respond OK for any other path to satisfy port scan
-                        ctx.Response.StatusCode = 200;
-                    }
-                    ctx.Response.OutputStream.Close();
-                }
-            });
-            //
-            // --- End HTTP listener ---
-            //
+            // 3) Configure JSON + Development + Env-vars
+            builder.Configuration
+                   .AddJsonFile("appsettings.json", optional: false, reloadOnChange: true)
+                   .AddJsonFile("appsettings.Development.json", optional: true, reloadOnChange: true)
+                   .AddEnvironmentVariables();
 
-            // Load configuration: appsettings.json + appsettings.Development.json + environment variables
-            var config = new ConfigurationBuilder()
-                .SetBasePath(Directory.GetCurrentDirectory())
-                .AddJsonFile("appsettings.json", optional: false, reloadOnChange: true)
-                .AddJsonFile("appsettings.Development.json", optional: true, reloadOnChange: true)
-                .AddEnvironmentVariables()
-                .Build();
+            var app = builder.Build();
 
-            // Read MongoDB connection string
-            string envConn  = Environment.GetEnvironmentVariable("MONGO_CONN");
-            string fileConn = config["MongoSettings:ConnectionString"];
-            Console.WriteLine($"DEBUG: MONGO_CONN env var             = '{envConn}'");
-            Console.WriteLine($"DEBUG: appsettings ConnectionString   = '{fileConn}'");
-            string mongoConnectionString = envConn ?? fileConn;
-            Console.WriteLine($"DEBUG: Using mongoConnectionString    = '{mongoConnectionString}'");
+            // 4) Health check endpoint
+            app.MapGet("/health", () => Results.Ok("OK"));
 
-            string databaseName   = config["MongoSettings:DatabaseName"];
-            string collectionName = config["MongoSettings:CollectionName"];
+            // 5) Read Mongo & MQTT settings
+            var config = app.Configuration;
+            string envConn    = Environment.GetEnvironmentVariable("MONGO_CONN");
+            string fileConn   = config["MongoSettings:ConnectionString"]!;
+            string mongoConn  = envConn ?? fileConn;
+            string dbName     = config["MongoSettings:DatabaseName"]!;
+            string collName   = config["MongoSettings:CollectionName"]!;
 
-            var sensorReadingRepository = new SensorReadingRepository(
-                mongoConnectionString, databaseName, collectionName);
-            var sensorReadingService    = new SensorReadingService(sensorReadingRepository);
-
-            // MQTT settings
-            string mqttBroker = config["MqttSettings:Broker"];
+            string mqttBroker = config["MqttSettings:Broker"]!;
             int    mqttPort   = int.Parse(config["MqttSettings:Port"] ?? "1883");
-            string mqttUser   = Environment.GetEnvironmentVariable("MQTT_USER") ?? config["MqttSettings:User"];
-            string mqttPass   = Environment.GetEnvironmentVariable("MQTT_PASS") ?? config["MqttSettings:Pass"];
+            string mqttUser   = Environment.GetEnvironmentVariable("MQTT_USER") ?? config["MqttSettings:User"]!;
+            string mqttPass   = Environment.GetEnvironmentVariable("MQTT_PASS") ?? config["MqttSettings:Pass"]!;
 
-            var mqttClientService = new MqttClientService(
-                mqttBroker, mqttPort, mqttUser, mqttPass, sensorReadingService);
+            // 6) Initialize services
+            var repo    = new SensorReadingRepository(mongoConn, dbName, collName);
+            var service = new SensorReadingService(repo);
+            var mqtt    = new MqttClientService(mqttBroker, mqttPort, mqttUser, mqttPass, service);
 
-            // Forward MQTT events to WebSocket clients
-            mqttClientService.ReadingReceived    += (_, ev) => Broadcast(
-                $"{{ \"light\":\"{ev.Light}\", \"sound\":\"{ev.Sound}\", \"motion\":\"{ev.Motion}\" }}");
-            mqttClientService.CommandAckReceived += (_, ev) => Broadcast(ev.AckJson);
-            mqttClientService.ConfigReceived     += (_, ev) => Broadcast(ev.ConfigJson);
+            // 7) Wire MQTT → WebSocket broadcast
+            mqtt.ReadingReceived    += (_, ev) => _ = BroadcastAsync($"{{\"light\":\"{ev.Light}\",\"sound\":\"{ev.Sound}\",\"motion\":\"{ev.Motion}\"}}");
+            mqtt.CommandAckReceived += (_, ev) => _ = BroadcastAsync(ev.AckJson);
+            mqtt.ConfigReceived     += (_, ev) => _ = BroadcastAsync(ev.ConfigJson);
 
-            // Start WebSocket server on the same port
-            FleckLog.Level = Fleck.LogLevel.Warn;
-            var server = new WebSocketServer($"ws://0.0.0.0:{port}");
-            server.Start(socket =>
+            // 8) Enable WebSockets in the pipeline
+            app.UseWebSockets();
+
+            // 9) Map WebSocket endpoint
+            app.Map("/ws", async context =>
             {
-                socket.OnOpen = () =>
+                if (!context.WebSockets.IsWebSocketRequest)
                 {
-                    lock (_allSockets)
-                        _allSockets.Add(socket);
-                    var info = socket.ConnectionInfo;
-                    Console.WriteLine(
-                        $"[WebSocket] Connected: {info.ClientIpAddress}:{info.ClientPort} (Total: {_allSockets.Count})");
-                };
+                    context.Response.StatusCode = 400;
+                    return;
+                }
 
-                socket.OnClose = () =>
-                {
-                    lock (_allSockets)
-                        _allSockets.Remove(socket);
-                    var info = socket.ConnectionInfo;
-                    Console.WriteLine(
-                        $"[WebSocket] Disconnected: {info.ClientIpAddress}:{info.ClientPort} (Total: {_allSockets.Count})");
-                };
+                WebSocket socket = await context.WebSockets.AcceptWebSocketAsync();
+                _sockets.Add(socket);
 
-                socket.OnError = ex =>
+                var buffer = new byte[1024];
+                while (socket.State == WebSocketState.Open)
                 {
-                    var info = socket.ConnectionInfo;
-                    Console.WriteLine(
-                        $"[WebSocket] Error from {info.ClientIpAddress}:{info.ClientPort}: {ex.Message}");
-                };
+                    var result = await socket.ReceiveAsync(buffer, CancellationToken.None);
+                    if (result.CloseStatus.HasValue) break;
+                    // here you could handle client → server messages if needed
+                }
 
-                socket.OnMessage = msg =>
-                {
-                    Console.WriteLine($"[WebSocket] Received message: {msg}");
-                    mqttClientService.PublishCommand(msg);
-                };
+                await socket.CloseAsync(WebSocketCloseStatus.NormalClosure, "Closed by server", CancellationToken.None);
             });
 
-            Console.WriteLine($"WebSocket server started on ws://0.0.0.0:{port}");
-
-            // Keep the app running indefinitely
-            Thread.Sleep(Timeout.Infinite);
+            // 10) Run on specified port
+            app.Urls.Add($"http://*:{port}");
+            await app.RunAsync();
         }
 
-        private static void Broadcast(string msg)
+        // Broadcast text message to all open WebSockets
+        private static async Task BroadcastAsync(string message)
         {
-            lock (_allSockets)
+            var buffer = Encoding.UTF8.GetBytes(message);
+            foreach (var socket in _sockets)
             {
-                foreach (var socket in _allSockets)
-                    socket.Send(msg);
+                if (socket.State == WebSocketState.Open)
+                {
+                    await socket.SendAsync(buffer, WebSocketMessageType.Text, true, CancellationToken.None);
+                }
             }
         }
     }
 
+    // Legacy DTO — kept for compatibility
     public class CommandMessage
     {
         public string Command { get; set; } = string.Empty;
