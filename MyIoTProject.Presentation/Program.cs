@@ -1,9 +1,6 @@
 ﻿using System;
 using System.Collections.Generic;
 using System.IO;
-using System.Net;
-using System.Text;
-using System.Threading.Tasks;
 using Fleck;
 using Microsoft.Extensions.Configuration;
 using MyIoTProject.Application.Services;
@@ -21,37 +18,10 @@ namespace MyIoTProject.Presentation
         {
             Console.WriteLine("Starting MyIoTProject...");
 
-            // --- Begin HTTP listener for all paths, including /health ---
+            // Read the port from the environment, fallback to 8181
             string portEnv = Environment.GetEnvironmentVariable("PORT") ?? "8181";
-            if (!int.TryParse(portEnv, out int port)) port = 8181;
-
-            var httpListener = new HttpListener();
-            // Listen on any path under root to detect open port
-            httpListener.Prefixes.Add($"http://*:{port}/");
-            httpListener.Start();
-
-            Task.Run(async () =>
-            {
-                while (true)
-                {
-                    var ctx = await httpListener.GetContextAsync();
-                    var path = ctx.Request.Url.AbsolutePath;
-                    if (path.Equals("/health", StringComparison.OrdinalIgnoreCase))
-                    {
-                        ctx.Response.StatusCode = 200;
-                        byte[] buf = Encoding.UTF8.GetBytes("healthy");
-                        ctx.Response.ContentLength64 = buf.Length;
-                        await ctx.Response.OutputStream.WriteAsync(buf, 0, buf.Length);
-                    }
-                    else
-                    {
-                        // Respond OK on other paths for port scan
-                        ctx.Response.StatusCode = 200;
-                    }
-                    ctx.Response.OutputStream.Close();
-                }
-            });
-            // --- End HTTP listener ---
+            if (!int.TryParse(portEnv, out int port))
+                port = 8181;
 
             // Configuration: appsettings.json + appsettings.Development.json + Environment variables
             var config = new ConfigurationBuilder()
@@ -73,8 +43,8 @@ namespace MyIoTProject.Presentation
             string databaseName = config["MongoSettings:DatabaseName"];
             string collectionName = config["MongoSettings:CollectionName"];
 
-            var sensorReadingRepository =
-                new SensorReadingRepository(mongoConnectionString, databaseName, collectionName);
+            var sensorReadingRepository = new SensorReadingRepository(
+                mongoConnectionString, databaseName, collectionName);
             var sensorReadingService = new SensorReadingService(sensorReadingRepository);
 
             // MQTT
@@ -95,13 +65,9 @@ namespace MyIoTProject.Presentation
             mqttClientService.CommandAckReceived += (_, ev) => Broadcast(ev.AckJson);
             mqttClientService.ConfigReceived += (_, ev) => Broadcast(ev.ConfigJson);
 
-            // Start WebSocket server
-            string wsHost = config["WebSocketSettings:Host"] ?? "0.0.0.0";
-            int wsPortWs = int.Parse(config["WebSocketSettings:Port"] ?? "8181");
-
+            // Start WebSocket server on dynamic port
             FleckLog.Level = LogLevel.Warn;
-
-            var server = new WebSocketServer($"ws://{wsHost}:{wsPortWs}");
+            var server = new WebSocketServer($"ws://0.0.0.0:{port}");
             server.Start(socket =>
             {
                 socket.OnOpen = () =>
@@ -134,7 +100,7 @@ namespace MyIoTProject.Presentation
                 };
             });
 
-            Console.WriteLine($"WebSocket server started on ws://{wsHost}:{wsPortWs}");
+            Console.WriteLine($"WebSocket server started on ws://0.0.0.0:{port}");
             Console.ReadLine();
         }
 
