@@ -1,6 +1,7 @@
 ﻿using System;
 using System.Collections.Generic;
 using System.IO;
+using System.Threading;
 using Fleck;
 using Microsoft.Extensions.Configuration;
 using MyIoTProject.Application.Services;
@@ -101,7 +102,9 @@ namespace MyIoTProject.Presentation
             });
 
             Console.WriteLine($"WebSocket server started on ws://0.0.0.0:{port}");
-            Console.ReadLine();
+
+            // Keep the app running indefinitely
+            Thread.Sleep(Timeout.Infinite);
         }
 
         private static void Broadcast(string msg)
