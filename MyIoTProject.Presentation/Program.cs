@@ -33,12 +33,19 @@ namespace MyIoTProject.Presentation
                    .AddJsonFile("appsettings.Development.json", optional: true, reloadOnChange: true)
                    .AddEnvironmentVariables();
 
+            // 3a) Configure logging to suppress INFO-level 404 logs
+            builder.Logging
+                   .AddConfiguration(builder.Configuration.GetSection("Logging"));
+
             var app = builder.Build();
 
-            // 4) Health check endpoint
+            // 4) Root endpoint to avoid 404 on "/"
+            app.MapGet("/", () => Results.Text("MyIoTProject is running"));
+
+            // 5) Health check endpoint
             app.MapGet("/health", () => Results.Ok("OK"));
 
-            // 5) Read Mongo & MQTT settings
+            // 6) Read Mongo & MQTT settings
             var config = app.Configuration;
             string envConn    = Environment.GetEnvironmentVariable("MONGO_CONN");
             string fileConn   = config["MongoSettings:ConnectionString"]!;
@@ -51,20 +58,20 @@ namespace MyIoTProject.Presentation
             string mqttUser   = Environment.GetEnvironmentVariable("MQTT_USER") ?? config["MqttSettings:User"]!;
             string mqttPass   = Environment.GetEnvironmentVariable("MQTT_PASS") ?? config["MqttSettings:Pass"]!;
 
-            // 6) Initialize services
+            // 7) Initialize services
             var repo    = new SensorReadingRepository(mongoConn, dbName, collName);
             var service = new SensorReadingService(repo);
             var mqtt    = new MqttClientService(mqttBroker, mqttPort, mqttUser, mqttPass, service);
 
-            // 7) Wire MQTT → WebSocket broadcast
+            // 8) Wire MQTT → WebSocket broadcast
             mqtt.ReadingReceived    += (_, ev) => _ = BroadcastAsync($"{{\"light\":\"{ev.Light}\",\"sound\":\"{ev.Sound}\",\"motion\":\"{ev.Motion}\"}}");
             mqtt.CommandAckReceived += (_, ev) => _ = BroadcastAsync(ev.AckJson);
             mqtt.ConfigReceived     += (_, ev) => _ = BroadcastAsync(ev.ConfigJson);
 
-            // 8) Enable WebSockets in the pipeline
+            // 9) Enable WebSockets
             app.UseWebSockets();
 
-            // 9) Map WebSocket endpoint
+            // 10) Map WebSocket endpoint
             app.Map("/ws", async context =>
             {
                 if (!context.WebSockets.IsWebSocketRequest)
@@ -81,13 +88,12 @@ namespace MyIoTProject.Presentation
                 {
                     var result = await socket.ReceiveAsync(buffer, CancellationToken.None);
                     if (result.CloseStatus.HasValue) break;
-                    // here you could handle client → server messages if needed
                 }
 
                 await socket.CloseAsync(WebSocketCloseStatus.NormalClosure, "Closed by server", CancellationToken.None);
             });
 
-            // 10) Run on specified port
+            // 11) Listen on the configured port
             app.Urls.Add($"http://*:{port}");
             await app.RunAsync();
         }
