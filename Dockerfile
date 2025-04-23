@@ -2,7 +2,7 @@
 FROM mcr.microsoft.com/dotnet/sdk:8.0 AS build
 WORKDIR /src
 
-# Copy the solution file and project files
+# Copy solution and project files
 COPY MyIoTProject.sln ./
 COPY MyIoTProject.Core/*.csproj MyIoTProject.Core/
 COPY MyIoTProject.Application/*.csproj MyIoTProject.Application/
@@ -12,8 +12,14 @@ COPY MyIoTProject.Presentation/*.csproj MyIoTProject.Presentation/
 # Restore NuGet packages
 RUN dotnet restore
 
-# Copy all source code and publish a Release build
+# Copy all source code
 COPY . .
+
+# Ensure optional appsettings.Development.json exists (prevents MSB3030 error)
+RUN test -f MyIoTProject.Presentation/appsettings.Development.json \
+    || echo "{}" > MyIoTProject.Presentation/appsettings.Development.json
+
+# Publish Release build to /app/publish
 RUN dotnet publish MyIoTProject.Presentation/MyIoTProject.Presentation.csproj \
     -c Release \
     -o /app/publish
@@ -22,11 +28,11 @@ RUN dotnet publish MyIoTProject.Presentation/MyIoTProject.Presentation.csproj \
 FROM mcr.microsoft.com/dotnet/aspnet:8.0 AS runtime
 WORKDIR /app
 
-# Copy published output from the build stage
+# Copy published output
 COPY --from=build /app/publish .
 
-# Instruct ASP.NET Core to listen on the port provided by Render
+# Listen on the port provided by Render
 ENV ASPNETCORE_URLS=http://0.0.0.0:${PORT}
 
-# Start the application
+# Launch the app
 ENTRYPOINT ["dotnet", "MyIoTProject.Presentation.dll"]
