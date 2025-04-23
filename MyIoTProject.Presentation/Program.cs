@@ -1,6 +1,8 @@
 ﻿using System;
 using System.Collections.Generic;
 using System.IO;
+using System.Net;
+using System.Threading.Tasks;
 using Fleck;
 using Microsoft.Extensions.Configuration;
 using MyIoTProject.Application.Services;
@@ -18,6 +20,27 @@ namespace MyIoTProject.Presentation
         {
             Console.WriteLine("Starting MyIoTProject...");
 
+            // --- Begin health-check listener ---
+            string portEnv = Environment.GetEnvironmentVariable("PORT") ?? "8181";
+            if (!int.TryParse(portEnv, out int port)) port = 8181;
+
+            var httpListener = new HttpListener();
+            httpListener.Prefixes.Add($"http://*:{port}/health/");
+            httpListener.Start();
+
+            Task.Run(async () =>
+            {
+                while (true)
+                {
+                    var ctx = await httpListener.GetContextAsync();
+                    ctx.Response.StatusCode = 200;
+                    using var sw = new StreamWriter(ctx.Response.OutputStream);
+                        sw.Write("healthy");
+                    ctx.Response.Close();
+                }
+            });
+            // --- End health-check listener ---
+
             // Configuration: appsettings.json + appsettings.Development.json + Environment variables
             var config = new ConfigurationBuilder()
                 .SetBasePath(Directory.GetCurrentDirectory())
@@ -29,13 +52,12 @@ namespace MyIoTProject.Presentation
             // Read MongoDB connection string
             string envConn  = Environment.GetEnvironmentVariable("MONGO_CONN");
             string fileConn = config["MongoSettings:ConnectionString"];
-            Console.WriteLine($"DEBUG: MONGO_CONN env var       = '{envConn}'");
-            Console.WriteLine($"DEBUG: appsettings ConnectionString = '{fileConn}'");
+            Console.WriteLine($"DEBUG: MONGO_CONN env var       = '{{envConn}}'");
+            Console.WriteLine($"DEBUG: appsettings ConnectionString = '{{fileConn}}'");
 
             string mongoConnectionString = envConn ?? fileConn;
-            Console.WriteLine($"DEBUG: Using mongoConnectionString  = '{mongoConnectionString}'");
+            Console.WriteLine($"DEBUG: Using mongoConnectionString  = '{{mongoConnectionString}}'");
 
-            // If empty here, the file was not read and the env variable is not set
             string databaseName   = config["MongoSettings:DatabaseName"];
             string collectionName = config["MongoSettings:CollectionName"];
 
@@ -73,7 +95,6 @@ namespace MyIoTProject.Presentation
                 socket.OnOpen = () =>
                 {
                     lock (_allSockets) _allSockets.Add(socket);
-
                     var info = socket.ConnectionInfo;
                     Console.WriteLine(
                         $"[WebSocket] Connected: {info.ClientIpAddress}:{info.ClientPort} (Total: {_allSockets.Count})");
@@ -82,7 +103,6 @@ namespace MyIoTProject.Presentation
                 socket.OnClose = () =>
                 {
                     lock (_allSockets) _allSockets.Remove(socket);
-
                     var info = socket.ConnectionInfo;
                     Console.WriteLine(
                         $"[WebSocket] Disconnected: {info.ClientIpAddress}:{info.ClientPort} (Total: {_allSockets.Count})");
