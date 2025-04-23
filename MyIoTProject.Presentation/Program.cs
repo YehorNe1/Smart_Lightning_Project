@@ -1,7 +1,10 @@
 ﻿using System;
 using System.Collections.Generic;
 using System.IO;
+using System.Net;
+using System.Text;
 using System.Threading;
+using System.Threading.Tasks;
 using Fleck;
 using Microsoft.Extensions.Configuration;
 using MyIoTProject.Application.Services;
@@ -26,6 +29,39 @@ namespace MyIoTProject.Presentation
                 port = 8181;
             }
 
+            //
+            // --- Begin simple HTTP listener to answer health checks and port scan ---
+            //
+            var http = new HttpListener();
+            // Listen on all paths under root: GET / and GET /health
+            http.Prefixes.Add($"http://*:{port}/");
+            http.Start();
+            _ = Task.Run(async () =>
+            {
+                while (true)
+                {
+                    var ctx = await http.GetContextAsync();
+                    var path = ctx.Request.Url.AbsolutePath;
+                    if (path.Equals("/health", StringComparison.OrdinalIgnoreCase))
+                    {
+                        // Health check endpoint
+                        ctx.Response.StatusCode = 200;
+                        var data = Encoding.UTF8.GetBytes("OK");
+                        ctx.Response.ContentLength64 = data.Length;
+                        await ctx.Response.OutputStream.WriteAsync(data, 0, data.Length);
+                    }
+                    else
+                    {
+                        // Respond OK for any other path to satisfy port scan
+                        ctx.Response.StatusCode = 200;
+                    }
+                    ctx.Response.OutputStream.Close();
+                }
+            });
+            //
+            // --- End HTTP listener ---
+            //
+
             // Load configuration: appsettings.json + appsettings.Development.json + environment variables
             var config = new ConfigurationBuilder()
                 .SetBasePath(Directory.GetCurrentDirectory())
@@ -37,10 +73,10 @@ namespace MyIoTProject.Presentation
             // Read MongoDB connection string
             string envConn  = Environment.GetEnvironmentVariable("MONGO_CONN");
             string fileConn = config["MongoSettings:ConnectionString"];
-            Console.WriteLine($"DEBUG: MONGO_CONN env var       = '{envConn}'");
-            Console.WriteLine($"DEBUG: appsettings ConnectionString = '{fileConn}'");
+            Console.WriteLine($"DEBUG: MONGO_CONN env var             = '{envConn}'");
+            Console.WriteLine($"DEBUG: appsettings ConnectionString   = '{fileConn}'");
             string mongoConnectionString = envConn ?? fileConn;
-            Console.WriteLine($"DEBUG: Using mongoConnectionString  = '{mongoConnectionString}'");
+            Console.WriteLine($"DEBUG: Using mongoConnectionString    = '{mongoConnectionString}'");
 
             string databaseName   = config["MongoSettings:DatabaseName"];
             string collectionName = config["MongoSettings:CollectionName"];
@@ -64,7 +100,7 @@ namespace MyIoTProject.Presentation
             mqttClientService.CommandAckReceived += (_, ev) => Broadcast(ev.AckJson);
             mqttClientService.ConfigReceived     += (_, ev) => Broadcast(ev.ConfigJson);
 
-            // Start WebSocket server on dynamic port
+            // Start WebSocket server on the same port
             FleckLog.Level = Fleck.LogLevel.Warn;
             var server = new WebSocketServer($"ws://0.0.0.0:{port}");
             server.Start(socket =>
