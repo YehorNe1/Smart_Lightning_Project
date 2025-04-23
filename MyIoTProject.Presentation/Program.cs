@@ -18,12 +18,14 @@ namespace MyIoTProject.Presentation
         {
             Console.WriteLine("Starting MyIoTProject...");
 
-            // Read the port from the environment, fallback to 8181
+            // Read PORT environment variable, default to 8181
             string portEnv = Environment.GetEnvironmentVariable("PORT") ?? "8181";
             if (!int.TryParse(portEnv, out int port))
+            {
                 port = 8181;
+            }
 
-            // Configuration: appsettings.json + appsettings.Development.json + Environment variables
+            // Load configuration: appsettings.json + appsettings.Development.json + environment variables
             var config = new ConfigurationBuilder()
                 .SetBasePath(Directory.GetCurrentDirectory())
                 .AddJsonFile("appsettings.json", optional: false, reloadOnChange: true)
@@ -32,47 +34,44 @@ namespace MyIoTProject.Presentation
                 .Build();
 
             // Read MongoDB connection string
-            string envConn = Environment.GetEnvironmentVariable("MONGO_CONN");
+            string envConn  = Environment.GetEnvironmentVariable("MONGO_CONN");
             string fileConn = config["MongoSettings:ConnectionString"];
             Console.WriteLine($"DEBUG: MONGO_CONN env var       = '{envConn}'");
             Console.WriteLine($"DEBUG: appsettings ConnectionString = '{fileConn}'");
-
             string mongoConnectionString = envConn ?? fileConn;
             Console.WriteLine($"DEBUG: Using mongoConnectionString  = '{mongoConnectionString}'");
 
-            string databaseName = config["MongoSettings:DatabaseName"];
+            string databaseName   = config["MongoSettings:DatabaseName"];
             string collectionName = config["MongoSettings:CollectionName"];
 
             var sensorReadingRepository = new SensorReadingRepository(
                 mongoConnectionString, databaseName, collectionName);
-            var sensorReadingService = new SensorReadingService(sensorReadingRepository);
+            var sensorReadingService    = new SensorReadingService(sensorReadingRepository);
 
-            // MQTT
+            // MQTT settings
             string mqttBroker = config["MqttSettings:Broker"];
-            int mqttPort = int.Parse(config["MqttSettings:Port"] ?? "1883");
-
-            string mqttUser = Environment.GetEnvironmentVariable("MQTT_USER")
-                              ?? config["MqttSettings:User"];
-            string mqttPass = Environment.GetEnvironmentVariable("MQTT_PASS")
-                              ?? config["MqttSettings:Pass"];
+            int    mqttPort   = int.Parse(config["MqttSettings:Port"] ?? "1883");
+            string mqttUser   = Environment.GetEnvironmentVariable("MQTT_USER") ?? config["MqttSettings:User"];
+            string mqttPass   = Environment.GetEnvironmentVariable("MQTT_PASS") ?? config["MqttSettings:Pass"];
 
             var mqttClientService = new MqttClientService(
                 mqttBroker, mqttPort, mqttUser, mqttPass, sensorReadingService);
 
-            // Forward MQTT → WebSocket
-            mqttClientService.ReadingReceived += (_, ev) => Broadcast(
+            // Forward MQTT events to WebSocket clients
+            mqttClientService.ReadingReceived    += (_, ev) => Broadcast(
                 $"{{ \"light\":\"{ev.Light}\", \"sound\":\"{ev.Sound}\", \"motion\":\"{ev.Motion}\" }}");
             mqttClientService.CommandAckReceived += (_, ev) => Broadcast(ev.AckJson);
-            mqttClientService.ConfigReceived += (_, ev) => Broadcast(ev.ConfigJson);
+            mqttClientService.ConfigReceived     += (_, ev) => Broadcast(ev.ConfigJson);
 
             // Start WebSocket server on dynamic port
-            FleckLog.Level = LogLevel.Warn;
+            FleckLog.Level = Fleck.LogLevel.Warn;
             var server = new WebSocketServer($"ws://0.0.0.0:{port}");
             server.Start(socket =>
             {
                 socket.OnOpen = () =>
                 {
-                    lock (_allSockets) _allSockets.Add(socket);
+                    lock (_allSockets)
+                        _allSockets.Add(socket);
                     var info = socket.ConnectionInfo;
                     Console.WriteLine(
                         $"[WebSocket] Connected: {info.ClientIpAddress}:{info.ClientPort} (Total: {_allSockets.Count})");
@@ -80,7 +79,8 @@ namespace MyIoTProject.Presentation
 
                 socket.OnClose = () =>
                 {
-                    lock (_allSockets) _allSockets.Remove(socket);
+                    lock (_allSockets)
+                        _allSockets.Remove(socket);
                     var info = socket.ConnectionInfo;
                     Console.WriteLine(
                         $"[WebSocket] Disconnected: {info.ClientIpAddress}:{info.ClientPort} (Total: {_allSockets.Count})");
@@ -108,14 +108,15 @@ namespace MyIoTProject.Presentation
         {
             lock (_allSockets)
             {
-                foreach (var s in _allSockets) s.Send(msg);
+                foreach (var socket in _allSockets)
+                    socket.Send(msg);
             }
         }
     }
 
     public class CommandMessage
     {
-        public string Command { get; set; } = "";
-        public int Value { get; set; }
+        public string Command { get; set; } = string.Empty;
+        public int    Value   { get; set; }
     }
 }
