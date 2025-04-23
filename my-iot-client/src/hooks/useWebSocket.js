@@ -1,7 +1,7 @@
 import { useState, useEffect, useCallback, useRef } from 'react';
 
 export default function useWebSocket(handleSensorMessage, addAnnotation) {
-  // URL из окружения, иначе локальный WS
+  // URL from environment, otherwise local WS
   const url = process.env.REACT_APP_WS_URL || 'ws://localhost:8181';
 
   const [socket, setSocket] = useState(null);
@@ -16,7 +16,7 @@ export default function useWebSocket(handleSensorMessage, addAnnotation) {
   useEffect(() => { sensorCbRef.current = handleSensorMessage; }, [handleSensorMessage]);
   useEffect(() => { addAnnoRef.current  = addAnnotation;       }, [addAnnotation]);
 
-  // ACK‑обработчик (ваш код)
+  // ACK handler
   const handleAckMessage = useCallback((msg) => {
     if (msg.ackCommand === 'setInterval')       setCurrentInterval(msg.value);
     else if (msg.ackCommand === 'setLightThreshold') setCurrentLightTh(msg.value);
@@ -42,14 +42,14 @@ export default function useWebSocket(handleSensorMessage, addAnnotation) {
     setNotificationOpen(true);
   }, []);
 
-  // CONFIG‑обработчик (ваш код)
+  // CONFIG handler
   const handleConfigMessage = useCallback((cfg) => {
     setCurrentInterval(cfg.interval);
     setCurrentLightTh(cfg.lightThreshold);
     setCurrentSoundTh(cfg.soundThreshold);
   }, []);
 
-  // открываем WebSocket
+  // open WebSocket
   useEffect(() => {
     const ws = new WebSocket(url);
     ws.onopen    = () => ws.send(JSON.stringify({ command: 'getConfig' }));

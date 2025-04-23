@@ -18,7 +18,7 @@ namespace MyIoTProject.Presentation
         {
             Console.WriteLine("Starting MyIoTProject...");
 
-            // ——— Конфиг: appsettings.json + appsettings.Development.json + Env
+            // Configuration: appsettings.json + appsettings.Development.json + Environment variables
             var config = new ConfigurationBuilder()
                 .SetBasePath(Directory.GetCurrentDirectory())
                 .AddJsonFile("appsettings.json",             optional: false, reloadOnChange: true)
@@ -26,7 +26,7 @@ namespace MyIoTProject.Presentation
                 .AddEnvironmentVariables()
                 .Build();
 
-            // ——— Читаем строку подключения к Mongo
+            // Read MongoDB connection string
             string envConn  = Environment.GetEnvironmentVariable("MONGO_CONN");
             string fileConn = config["MongoSettings:ConnectionString"];
             Console.WriteLine($"DEBUG: MONGO_CONN env var       = '{envConn}'");
@@ -35,8 +35,7 @@ namespace MyIoTProject.Presentation
             string mongoConnectionString = envConn ?? fileConn;
             Console.WriteLine($"DEBUG: Using mongoConnectionString  = '{mongoConnectionString}'");
 
-            // если здесь пусто — файл не прочитался и переменная окружения не задана
-
+            // If empty here, the file was not read and the env variable is not set
             string databaseName   = config["MongoSettings:DatabaseName"];
             string collectionName = config["MongoSettings:CollectionName"];
 
@@ -44,7 +43,7 @@ namespace MyIoTProject.Presentation
                 new SensorReadingRepository(mongoConnectionString, databaseName, collectionName);
             var sensorReadingService = new SensorReadingService(sensorReadingRepository);
 
-            // ——— MQTT
+            // MQTT
             string mqttBroker = config["MqttSettings:Broker"];
             int    mqttPort   = int.Parse(config["MqttSettings:Port"] ?? "1883");
 
@@ -56,22 +55,51 @@ namespace MyIoTProject.Presentation
             var mqttClientService = new MqttClientService(
                 mqttBroker, mqttPort, mqttUser, mqttPass, sensorReadingService);
 
-            // ——— Пересылаем MQTT → WebSocket
+            // Forward MQTT → WebSocket
             mqttClientService.ReadingReceived += (_, ev) => Broadcast(
                 $"{{ \"light\":\"{ev.Light}\", \"sound\":\"{ev.Sound}\", \"motion\":\"{ev.Motion}\" }}");
             mqttClientService.CommandAckReceived += (_, ev) => Broadcast(ev.AckJson);
             mqttClientService.ConfigReceived     += (_, ev) => Broadcast(ev.ConfigJson);
 
-            // ——— Запуск WebSocket‑сервера
+            // Start WebSocket server
             string wsHost = config["WebSocketSettings:Host"] ?? "0.0.0.0";
             int    wsPort = int.Parse(config["WebSocketSettings:Port"] ?? "8181");
+
+            FleckLog.Level = LogLevel.Warn; // suppress Fleck's own verbose output
 
             var server = new WebSocketServer($"ws://{wsHost}:{wsPort}");
             server.Start(socket =>
             {
-                socket.OnOpen    = () => { lock (_allSockets) _allSockets.Add(socket); };
-                socket.OnClose   = () => { lock (_allSockets) _allSockets.Remove(socket); };
-                socket.OnMessage = msg => mqttClientService.PublishCommand(msg);
+                socket.OnOpen = () =>
+                {
+                    lock (_allSockets) _allSockets.Add(socket);
+
+                    var info = socket.ConnectionInfo;
+                    Console.WriteLine(
+                        $"[WebSocket] Connected: {info.ClientIpAddress}:{info.ClientPort} (Total: {_allSockets.Count})");
+                };
+
+                socket.OnClose = () =>
+                {
+                    lock (_allSockets) _allSockets.Remove(socket);
+
+                    var info = socket.ConnectionInfo;
+                    Console.WriteLine(
+                        $"[WebSocket] Disconnected: {info.ClientIpAddress}:{info.ClientPort} (Total: {_allSockets.Count})");
+                };
+
+                socket.OnError = ex =>
+                {
+                    var info = socket.ConnectionInfo;
+                    Console.WriteLine(
+                        $"[WebSocket] Error from {info.ClientIpAddress}:{info.ClientPort}: {ex.Message}");
+                };
+
+                socket.OnMessage = msg =>
+                {
+                    Console.WriteLine($"[WebSocket] Received message: {msg}");
+                    mqttClientService.PublishCommand(msg);
+                };
             });
 
             Console.WriteLine($"WebSocket server started on ws://{wsHost}:{wsPort}");
