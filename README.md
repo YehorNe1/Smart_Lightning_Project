@@ -46,7 +46,7 @@ cd MyIoTProject.Presentation
 dotnet run
 ```
 
-The server listens on **http://localhost:8181** and exposes a WebSocket at **/ws**.
+
 
 ### 2. Front-end
 
