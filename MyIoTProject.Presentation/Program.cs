@@ -1,29 +1,20 @@
 ﻿using System;
-using System.Collections.Concurrent;
-using System.Net.WebSockets;
-using System.Text;
-using System.Threading;
-using System.Threading.Tasks;
 using Microsoft.AspNetCore.Builder;
 using Microsoft.Extensions.Configuration;
+using Microsoft.Extensions.DependencyInjection;
 using Microsoft.Extensions.Hosting;
 using MyIoTProject.Application.Services;
+using MyIoTProject.Core.Interfaces;
 using MyIoTProject.Infrastructure.Mqtt;
 using MyIoTProject.Infrastructure.Repositories;
+using MyIoTProject.Presentation.Services;
 
 namespace MyIoTProject.Presentation
 {
     public class Program
     {
-        /// <summary>All active WebSocket connections.</summary>
-        private static readonly ConcurrentBag<WebSocket> _sockets = new();
-
-        public static async Task Main(string[] args)
+        public static void Main(string[] args)
         {
-            // --- 1) Port -------------------------------------------------------------------------
-            var port = Environment.GetEnvironmentVariable("PORT") ?? "8181";
-
-            // --- 2) WebApplication ---------------------------------------------------------------
             var builder = WebApplication.CreateBuilder(args);
 
             builder.Configuration
@@ -31,98 +22,60 @@ namespace MyIoTProject.Presentation
                    .AddJsonFile("appsettings.Development.json", optional: true,  reloadOnChange: true)
                    .AddEnvironmentVariables();
 
-            builder.Logging.AddConfiguration(builder.Configuration.GetSection("Logging"));
+            // 1) Register repository with settings from config
+            builder.Services.AddScoped<ISensorReadingRepository>(sp =>
+            {
+                var cfg = sp.GetRequiredService<IConfiguration>();
+
+                // Get Mongo connection string and names from appsettings or env
+                var mongoUri = Environment.GetEnvironmentVariable("MONGO_CONN")
+                               ?? cfg["MongoSettings:ConnectionString"]!;
+                var dbName   = cfg["MongoSettings:DatabaseName"]!;
+                var colName  = cfg["MongoSettings:CollectionName"]!;
+
+                // Create repository instance with those values
+                return new SensorReadingRepository(mongoUri, dbName, colName);
+            });
+
+            // 2) Register service that uses the repository
+            builder.Services.AddScoped<SensorReadingService>();
+
+            // 3) Register MQTT client with settings from config
+            builder.Services.AddSingleton<MqttClientService>(sp =>
+            {
+                var cfg = sp.GetRequiredService<IConfiguration>();
+
+                // Get MQTT broker info from appsettings or env
+                var mqttHost = cfg["MqttSettings:Broker"]!;
+                var mqttPort = int.Parse(cfg["MqttSettings:Port"]!);
+                var mqttUser = Environment.GetEnvironmentVariable("MQTT_USER")
+                               ?? cfg["MqttSettings:User"]!;
+                var mqttPass = Environment.GetEnvironmentVariable("MQTT_PASS")
+                               ?? cfg["MqttSettings:Pass"]!;
+
+                // Get the service that saves readings
+                var sensorSvc = sp.GetRequiredService<SensorReadingService>();
+
+                // Create MQTT client service with these parameters
+                return new MqttClientService(mqttHost, mqttPort, mqttUser, mqttPass, sensorSvc);
+            });
+
+            // 4) Register the Fleck WebSocket server as a background service
+            builder.Services.AddHostedService<WebSocketServerService>();
 
             var app = builder.Build();
 
-            // --- 3) Health & root ---------------------------------------------------------------
+            // 5) Simple HTTP endpoints: root and health check
             app.MapGet("/",      () => Results.Text("MyIoTProject is running"));
             app.MapGet("/health", () => Results.Ok("OK"));
 
-            // --- 4) Settings ---------------------------------------------------------------------
-            var cfg      = app.Configuration;
-            var mongoUri = Environment.GetEnvironmentVariable("MONGO_CONN") 
-                           ?? cfg["MongoSettings:ConnectionString"]!;
-            var dbName   = cfg["MongoSettings:DatabaseName"]!;
-            var colName  = cfg["MongoSettings:CollectionName"]!;
+            // 6) Decide HTTP port from env or config, default = 5000
+            var httpPort = Environment.GetEnvironmentVariable("PORT")
+                           ?? builder.Configuration["HttpSettings:Port"]
+                           ?? "5000";
+            app.Urls.Add($"http://*:{httpPort}");
 
-            var mqttHost = cfg["MqttSettings:Broker"]!;
-            var mqttPort = int.Parse(cfg["MqttSettings:Port"] ?? "1883");
-            var mqttUser = Environment.GetEnvironmentVariable("MQTT_USER") ?? cfg["MqttSettings:User"]!;
-            var mqttPass = Environment.GetEnvironmentVariable("MQTT_PASS") ?? cfg["MqttSettings:Pass"]!;
-
-            // --- 5) Dependency graph -------------------------------------------------------------
-            var repo    = new SensorReadingRepository(mongoUri, dbName, colName);
-            var service = new SensorReadingService(repo);
-            var mqtt    = new MqttClientService(mqttHost, mqttPort, mqttUser, mqttPass, service);
-
-            // MQTT → all WebSockets
-            mqtt.ReadingReceived    += (_, ev) => _ = BroadcastAsync(
-                $"{{\"light\":\"{ev.Light}\",\"sound\":\"{ev.Sound}\",\"motion\":\"{ev.Motion}\"}}");
-            mqtt.CommandAckReceived += (_, ev) => _ = BroadcastAsync(ev.AckJson);
-            mqtt.ConfigReceived     += (_, ev) => _ = BroadcastAsync(ev.ConfigJson);
-
-            // --- 6) WebSockets -------------------------------------------------------------------
-            app.UseWebSockets();
-
-            app.Map("/ws", async context =>
-            {
-                if (!context.WebSockets.IsWebSocketRequest)
-                {
-                    context.Response.StatusCode = 400;
-                    return;
-                }
-
-                WebSocket socket = await context.WebSockets.AcceptWebSocketAsync();
-                _sockets.Add(socket);
-
-                var buffer = new byte[4096];
-                while (socket.State == WebSocketState.Open)
-                {
-                    var result = await socket.ReceiveAsync(buffer, CancellationToken.None);
-
-                    // Forward TEXT frames to MQTT as commands
-                    if (result.MessageType == WebSocketMessageType.Text && result.Count > 0)
-                    {
-                        var json = Encoding.UTF8.GetString(buffer, 0, result.Count);
-                        mqtt.PublishCommand(json);
-                    }
-
-                    if (result.CloseStatus.HasValue)
-                        break;
-                }
-
-                // Clean-up
-                _sockets.TryTake(out _);
-                await socket.CloseAsync(WebSocketCloseStatus.NormalClosure,
-                                        "Closed by server", CancellationToken.None);
-            });
-
-            // --- 7) Listen -----------------------------------------------------------------------
-            app.Urls.Add($"http://*:{port}");
-            await app.RunAsync();
+            app.Run();
         }
-
-        /// <summary>Broadcasts a text message to every open WebSocket.</summary>
-        private static async Task BroadcastAsync(string message)
-        {
-            var buffer = Encoding.UTF8.GetBytes(message);
-
-            foreach (var socket in _sockets)
-            {
-                if (socket.State == WebSocketState.Open)
-                {
-                    await socket.SendAsync(buffer, WebSocketMessageType.Text, endOfMessage: true,
-                                            cancellationToken: CancellationToken.None);
-                }
-            }
-        }
-    }
-
-    // Legacy DTO — kept for compatibility with existing Arduino code
-    public class CommandMessage
-    {
-        public string Command { get; set; } = string.Empty;
-        public int    Value   { get; set; }
     }
 }
