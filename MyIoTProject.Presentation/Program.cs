@@ -1,5 +1,4 @@
 ﻿using System;
-using Microsoft.AspNetCore.Builder;
 using Microsoft.Extensions.Configuration;
 using Microsoft.Extensions.DependencyInjection;
 using Microsoft.Extensions.Hosting;
@@ -15,67 +14,58 @@ namespace MyIoTProject.Presentation
     {
         public static void Main(string[] args)
         {
-            var builder = WebApplication.CreateBuilder(args);
+            // Create a Host that does not start the HTTP server
+            Host.CreateDefaultBuilder(args)
+                .ConfigureAppConfiguration((hostingContext, config) =>
+                {
+                    config
+                        .AddJsonFile("appsettings.json",             optional: false, reloadOnChange: true)
+                        .AddJsonFile("appsettings.Development.json", optional: true,  reloadOnChange: true)
+                        .AddEnvironmentVariables();
+                })
+                .ConfigureServices((hostingContext, services) =>
+                {
+                    var cfg = hostingContext.Configuration;
 
-            builder.Configuration
-                   .AddJsonFile("appsettings.json",             optional: false, reloadOnChange: true)
-                   .AddJsonFile("appsettings.Development.json", optional: true,  reloadOnChange: true)
-                   .AddEnvironmentVariables();
+                    // 1) Register the repository
+                    services.AddScoped<ISensorReadingRepository>(sp =>
+                    {
+                        // Get Mongo settings from environment or file
+                        var mongoUri = Environment.GetEnvironmentVariable("MONGO_CONN")
+                                       ?? cfg["MongoSettings:ConnectionString"]!;
+                        var dbName   = cfg["MongoSettings:DatabaseName"]!;
+                        var colName  = cfg["MongoSettings:CollectionName"]!;
 
-            // 1) Register repository with settings from config
-            builder.Services.AddScoped<ISensorReadingRepository>(sp =>
-            {
-                var cfg = sp.GetRequiredService<IConfiguration>();
+                        // Make a new object that can save readings to Mongo
+                        return new SensorReadingRepository(mongoUri, dbName, colName);
+                    });
 
-                // Get Mongo connection string and names from appsettings or env
-                var mongoUri = Environment.GetEnvironmentVariable("MONGO_CONN")
-                               ?? cfg["MongoSettings:ConnectionString"]!;
-                var dbName   = cfg["MongoSettings:DatabaseName"]!;
-                var colName  = cfg["MongoSettings:CollectionName"]!;
+                    // 2) Register the service that uses the repository
+                    services.AddScoped<SensorReadingService>();
 
-                // Create repository instance with those values
-                return new SensorReadingRepository(mongoUri, dbName, colName);
-            });
+                    // 3) Register the MQTT client
+                    services.AddSingleton<MqttClientService>(sp =>
+                    {
+                        // Get MQTT settings from environment or file
+                        var mqttHost = cfg["MqttSettings:Broker"]!;
+                        var mqttPort = int.Parse(cfg["MqttSettings:Port"]!);
+                        var mqttUser = Environment.GetEnvironmentVariable("MQTT_USER")
+                                       ?? cfg["MqttSettings:User"]!;
+                        var mqttPass = Environment.GetEnvironmentVariable("MQTT_PASS")
+                                       ?? cfg["MqttSettings:Pass"]!;
 
-            // 2) Register service that uses the repository
-            builder.Services.AddScoped<SensorReadingService>();
+                        // Get the service to pass into the MQTT client
+                        var sensorSvc = sp.GetRequiredService<SensorReadingService>();
 
-            // 3) Register MQTT client with settings from config
-            builder.Services.AddSingleton<MqttClientService>(sp =>
-            {
-                var cfg = sp.GetRequiredService<IConfiguration>();
+                        // Make a new MQTT client that can publish and receive
+                        return new MqttClientService(mqttHost, mqttPort, mqttUser, mqttPass, sensorSvc);
+                    });
 
-                // Get MQTT broker info from appsettings or env
-                var mqttHost = cfg["MqttSettings:Broker"]!;
-                var mqttPort = int.Parse(cfg["MqttSettings:Port"]!);
-                var mqttUser = Environment.GetEnvironmentVariable("MQTT_USER")
-                               ?? cfg["MqttSettings:User"]!;
-                var mqttPass = Environment.GetEnvironmentVariable("MQTT_PASS")
-                               ?? cfg["MqttSettings:Pass"]!;
-
-                // Get the service that saves readings
-                var sensorSvc = sp.GetRequiredService<SensorReadingService>();
-
-                // Create MQTT client service with these parameters
-                return new MqttClientService(mqttHost, mqttPort, mqttUser, mqttPass, sensorSvc);
-            });
-
-            // 4) Register the Fleck WebSocket server as a background service
-            builder.Services.AddHostedService<WebSocketServerService>();
-
-            var app = builder.Build();
-
-            // 5) Simple HTTP endpoints: root and health check
-            app.MapGet("/",      () => Results.Text("MyIoTProject is running"));
-            app.MapGet("/health", () => Results.Ok("OK"));
-
-            // 6) Decide HTTP port from env or config, default = 5000
-            var httpPort = Environment.GetEnvironmentVariable("PORT")
-                           ?? builder.Configuration["HttpSettings:Port"]
-                           ?? "5000";
-            app.Urls.Add($"http://*:{httpPort}");
-
-            app.Run();
+                    // 4) Run the Fleck WebSocket server as a background job
+                    services.AddHostedService<WebSocketServerService>();
+                })
+                .Build()
+                .Run();
         }
     }
 }
