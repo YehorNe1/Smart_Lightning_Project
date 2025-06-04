@@ -26,14 +26,24 @@ namespace MyIoTProject.Presentation.Services
 
         public Task StartAsync(CancellationToken cancellationToken)
         {
-            // Read internal port (for Fleck) from configuration (always 8181)
-            var internalPort = _configuration["WebSocketSettings:Port"] ?? "8181";
-            var internalHost = _configuration["WebSocketSettings:Host"] ?? "0.0.0.0";
+            // Get the host from settings or use "0.0.0.0" if not set.
+            var host = _configuration["WebSocketSettings:Host"];
+            if (string.IsNullOrWhiteSpace(host))
+            {
+                host = "0.0.0.0";
+            }
 
-            // Build Fleck connection string like "ws://0.0.0.0:8181/ws"
-            var connectionString = $"ws://{internalHost}:{internalPort}/ws";
+            // Get the port from settings or use 8181 if not a number.
+            var portString = _configuration["WebSocketSettings:Port"];
+            if (!int.TryParse(portString, out var port))
+            {
+                port = 8181;
+            }
 
-            // Create and start Fleck server that listens on internal port 8181
+            // Build the Fleck URL, for example "ws://0.0.0.0:8181/ws".
+            var connectionString = $"ws://{host}:{port}/ws";
+
+            // Start the Fleck server on that internal port.
             _server = new WebSocketServer(connectionString)
             {
                 RestartAfterListenError = true
@@ -43,22 +53,24 @@ namespace MyIoTProject.Presentation.Services
             {
                 socket.OnOpen = () =>
                 {
+                    // When a client connects, we add it to our list.
                     Console.WriteLine($"[Fleck] Client connected: {socket.ConnectionInfo.ClientIpAddress}:{socket.ConnectionInfo.ClientPort}");
                     _clients.Add(socket);
                 };
 
                 socket.OnClose = () =>
                 {
+                    // When a client disconnects, we remove it.
                     Console.WriteLine($"[Fleck] Client disconnected: {socket.ConnectionInfo.ClientIpAddress}:{socket.ConnectionInfo.ClientPort}");
                     _clients.TryTake(out _);
                 };
 
                 socket.OnMessage = message =>
                 {
+                    // When a message comes from a WebSocket client, send it to MQTT.
                     Console.WriteLine($"[Fleck] Received from WebSocket client: {message}");
                     try
                     {
-                        // Whenever Fleck gets a message, forward to MQTT
                         _mqttService.PublishCommand(message);
                     }
                     catch (Exception ex)
@@ -68,7 +80,7 @@ namespace MyIoTProject.Presentation.Services
                 };
             });
 
-            // Subscribe to MQTT events so we can broadcast to all connected WebSocket clients
+            // When MQTT sends new data, we will broadcast to WebSocket clients.
             _mqttService.ReadingReceived    += OnMqttReading;
             _mqttService.CommandAckReceived += OnMqttAck;
             _mqttService.ConfigReceived     += OnMqttConfig;
@@ -79,24 +91,26 @@ namespace MyIoTProject.Presentation.Services
 
         private void OnMqttReading(object? sender, ReadingReceivedEventArgs e)
         {
-            // Build a JSON string with sensor data
+            // Build a simple JSON with light, sound, motion values.
             var json = $"{{\"light\":\"{e.Light}\",\"sound\":\"{e.Sound}\",\"motion\":\"{e.Motion}\"}}";
             Broadcast(json);
         }
 
         private void OnMqttAck(object? sender, CommandAckReceivedEventArgs e)
         {
+            // Broadcast the acknowledgement JSON to clients.
             Broadcast(e.AckJson);
         }
 
         private void OnMqttConfig(object? sender, ConfigReceivedEventArgs e)
         {
+            // Broadcast the config JSON to clients.
             Broadcast(e.ConfigJson);
         }
 
         private void Broadcast(string message)
         {
-            // Send message to all WebSocket clients if available
+            // Send the message to every client that is connected.
             foreach (var client in _clients)
             {
                 if (client.IsAvailable)
@@ -108,12 +122,12 @@ namespace MyIoTProject.Presentation.Services
 
         public Task StopAsync(CancellationToken cancellationToken)
         {
-            // Unsubscribe from MQTT events on stop
+            // Unsubscribe from MQTT events when stopping.
             _mqttService.ReadingReceived    -= OnMqttReading;
             _mqttService.CommandAckReceived -= OnMqttAck;
             _mqttService.ConfigReceived     -= OnMqttConfig;
 
-            // Dispose the Fleck server
+            // Dispose Fleck server.
             _server?.Dispose();
             Console.WriteLine("[WebSocketServerService] Fleck stopped.");
             return Task.CompletedTask;

@@ -15,34 +15,34 @@ namespace MyIoTProject.Presentation
     {
         public static void Main(string[] args)
         {
-            // Build a web app (includes Kestrel HTTP server)
+            // We create the web application (this gives us Kestrel server).
             var builder = WebApplication.CreateBuilder(args);
 
-            // Load settings from JSON files and environment variables
+            // We load settings from appsettings.json and environment variables.
             builder.Configuration
-                   .AddJsonFile("appsettings.json",             optional: false, reloadOnChange: true)
-                   .AddJsonFile("appsettings.Development.json", optional: true,  reloadOnChange: true)
+                   .AddJsonFile("appsettings.json", optional: false, reloadOnChange: true)
+                   .AddJsonFile("appsettings.Development.json", optional: true, reloadOnChange: true)
                    .AddEnvironmentVariables();
 
-            // ------------------------
-            // 1) Register repository (Onion architecture)
+            // We tell the app how to save sensor readings in MongoDB.
             builder.Services.AddScoped<ISensorReadingRepository>(sp =>
             {
-                var cfg      = sp.GetRequiredService<IConfiguration>();
+                var cfg = sp.GetRequiredService<IConfiguration>();
                 var mongoUri = Environment.GetEnvironmentVariable("MONGO_CONN")
                                ?? cfg["MongoSettings:ConnectionString"]!;
-                var dbName   = cfg["MongoSettings:DatabaseName"]!;
-                var colName  = cfg["MongoSettings:CollectionName"]!;
+                var dbName = cfg["MongoSettings:DatabaseName"]!;
+                var colName = cfg["MongoSettings:CollectionName"]!;
+
                 return new SensorReadingRepository(mongoUri, dbName, colName);
             });
 
-            // 2) Register service that uses the repository
+            // We tell the app what to do with sensor readings (filtering).
             builder.Services.AddScoped<SensorReadingService>();
 
-            // 3) Register MQTT client service
+            // We set up MQTT client so we can send and receive messages.
             builder.Services.AddSingleton<MqttClientService>(sp =>
             {
-                var cfg      = sp.GetRequiredService<IConfiguration>();
+                var cfg = sp.GetRequiredService<IConfiguration>();
                 var mqttHost = cfg["MqttSettings:Broker"]!;
                 var mqttPort = int.Parse(cfg["MqttSettings:Port"]!);
                 var mqttUser = Environment.GetEnvironmentVariable("MQTT_USER")
@@ -54,31 +54,31 @@ namespace MyIoTProject.Presentation
                 return new MqttClientService(mqttHost, mqttPort, mqttUser, mqttPass, sensorSvc);
             });
 
-            // 4) Fleck WebSocket server will read its own internal port/host from IConfiguration
+            // We start the Fleck WebSocket server in the background.
             builder.Services.AddHostedService<WebSocketServerService>();
 
             var app = builder.Build();
 
-            // ------------------------
-            // 5) Allow WebSocket upgrades so Kestrel can forward /ws requests to Fleck
+            // We allow WebSocket upgrades so that Kestrel can forward /ws to Fleck.
             app.UseWebSockets();
 
+            // When someone connects to /ws, we accept WebSocket and do nothing else here.
             app.Map("/ws", httpContext =>
             {
-                // Accept the WebSocket upgrade here; Fleck is listening on internal port (from appsettings.json)
                 return httpContext.WebSockets.AcceptWebSocketAsync()
                     .ContinueWith(_ => Task.CompletedTask);
             });
 
-            // 6) Health endpoint, if needed
+            // A simple endpoint to check if the app is running.
             app.MapGet("/health", () => Results.Ok("OK"));
 
-            // 7) Listen on the port that Render provides (or default 5000 locally)
+            // Kestrel listens on the port from environment or 5000 if none is set.
             var httpPort = Environment.GetEnvironmentVariable("PORT")
                            ?? builder.Configuration["HttpSettings:Port"]
                            ?? "5000";
             app.Urls.Add($"http://*:{httpPort}");
 
+            // Run the application (starts both Kestrel and Fleck).
             app.Run();
         }
     }
