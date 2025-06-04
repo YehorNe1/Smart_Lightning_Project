@@ -1,4 +1,5 @@
 ﻿using System;
+using Microsoft.AspNetCore.Builder;
 using Microsoft.Extensions.Configuration;
 using Microsoft.Extensions.DependencyInjection;
 using Microsoft.Extensions.Hosting;
@@ -14,58 +15,71 @@ namespace MyIoTProject.Presentation
     {
         public static void Main(string[] args)
         {
-            // Create a Host that does not start the HTTP server
-            Host.CreateDefaultBuilder(args)
-                .ConfigureAppConfiguration((hostingContext, config) =>
-                {
-                    config
-                        .AddJsonFile("appsettings.json",             optional: false, reloadOnChange: true)
-                        .AddJsonFile("appsettings.Development.json", optional: true,  reloadOnChange: true)
-                        .AddEnvironmentVariables();
-                })
-                .ConfigureServices((hostingContext, services) =>
-                {
-                    var cfg = hostingContext.Configuration;
+            // Build a web app (includes Kestrel HTTP server)
+            var builder = WebApplication.CreateBuilder(args);
 
-                    // 1) Register the repository
-                    services.AddScoped<ISensorReadingRepository>(sp =>
-                    {
-                        // Get Mongo settings from environment or file
-                        var mongoUri = Environment.GetEnvironmentVariable("MONGO_CONN")
-                                       ?? cfg["MongoSettings:ConnectionString"]!;
-                        var dbName   = cfg["MongoSettings:DatabaseName"]!;
-                        var colName  = cfg["MongoSettings:CollectionName"]!;
+            // Load settings from JSON files and environment variables
+            builder.Configuration
+                   .AddJsonFile("appsettings.json",             optional: false, reloadOnChange: true)
+                   .AddJsonFile("appsettings.Development.json", optional: true,  reloadOnChange: true)
+                   .AddEnvironmentVariables();
 
-                        // Make a new object that can save readings to Mongo
-                        return new SensorReadingRepository(mongoUri, dbName, colName);
-                    });
+            // ------------------------
+            // 1) Register repository (Onion architecture)
+            builder.Services.AddScoped<ISensorReadingRepository>(sp =>
+            {
+                var cfg      = sp.GetRequiredService<IConfiguration>();
+                var mongoUri = Environment.GetEnvironmentVariable("MONGO_CONN")
+                               ?? cfg["MongoSettings:ConnectionString"]!;
+                var dbName   = cfg["MongoSettings:DatabaseName"]!;
+                var colName  = cfg["MongoSettings:CollectionName"]!;
+                return new SensorReadingRepository(mongoUri, dbName, colName);
+            });
 
-                    // 2) Register the service that uses the repository
-                    services.AddScoped<SensorReadingService>();
+            // 2) Register service that uses the repository
+            builder.Services.AddScoped<SensorReadingService>();
 
-                    // 3) Register the MQTT client
-                    services.AddSingleton<MqttClientService>(sp =>
-                    {
-                        // Get MQTT settings from environment or file
-                        var mqttHost = cfg["MqttSettings:Broker"]!;
-                        var mqttPort = int.Parse(cfg["MqttSettings:Port"]!);
-                        var mqttUser = Environment.GetEnvironmentVariable("MQTT_USER")
-                                       ?? cfg["MqttSettings:User"]!;
-                        var mqttPass = Environment.GetEnvironmentVariable("MQTT_PASS")
-                                       ?? cfg["MqttSettings:Pass"]!;
+            // 3) Register MQTT client service
+            builder.Services.AddSingleton<MqttClientService>(sp =>
+            {
+                var cfg      = sp.GetRequiredService<IConfiguration>();
+                var mqttHost = cfg["MqttSettings:Broker"]!;
+                var mqttPort = int.Parse(cfg["MqttSettings:Port"]!);
+                var mqttUser = Environment.GetEnvironmentVariable("MQTT_USER")
+                               ?? cfg["MqttSettings:User"]!;
+                var mqttPass = Environment.GetEnvironmentVariable("MQTT_PASS")
+                               ?? cfg["MqttSettings:Pass"]!;
 
-                        // Get the service to pass into the MQTT client
-                        var sensorSvc = sp.GetRequiredService<SensorReadingService>();
+                var sensorSvc = sp.GetRequiredService<SensorReadingService>();
+                return new MqttClientService(mqttHost, mqttPort, mqttUser, mqttPass, sensorSvc);
+            });
 
-                        // Make a new MQTT client that can publish and receive
-                        return new MqttClientService(mqttHost, mqttPort, mqttUser, mqttPass, sensorSvc);
-                    });
+            // 4) Fleck WebSocket server will read its own internal port/host from IConfiguration
+            builder.Services.AddHostedService<WebSocketServerService>();
 
-                    // 4) Run the Fleck WebSocket server as a background job
-                    services.AddHostedService<WebSocketServerService>();
-                })
-                .Build()
-                .Run();
+            var app = builder.Build();
+
+            // ------------------------
+            // 5) Allow WebSocket upgrades so Kestrel can forward /ws requests to Fleck
+            app.UseWebSockets();
+
+            app.Map("/ws", httpContext =>
+            {
+                // Accept the WebSocket upgrade here; Fleck is listening on internal port (from appsettings.json)
+                return httpContext.WebSockets.AcceptWebSocketAsync()
+                    .ContinueWith(_ => Task.CompletedTask);
+            });
+
+            // 6) Health endpoint, if needed
+            app.MapGet("/health", () => Results.Ok("OK"));
+
+            // 7) Listen on the port that Render provides (or default 5000 locally)
+            var httpPort = Environment.GetEnvironmentVariable("PORT")
+                           ?? builder.Configuration["HttpSettings:Port"]
+                           ?? "5000";
+            app.Urls.Add($"http://*:{httpPort}");
+
+            app.Run();
         }
     }
 }
