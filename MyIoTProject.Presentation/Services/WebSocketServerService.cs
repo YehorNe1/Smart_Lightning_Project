@@ -26,8 +26,21 @@ namespace MyIoTProject.Presentation.Services
 
         public Task StartAsync(CancellationToken cancellationToken)
         {
+            // 1) Try to get port from environment (Render sets this to a number)
+            var envPort = Environment.GetEnvironmentVariable("PORT");
+            string wsPort;
+
+            if (!string.IsNullOrEmpty(envPort))
+            {
+                wsPort = envPort;
+            }
+            else
+            {
+                // 2) Fallback to configuration: WebSocketSettings:Port (appsettings.json)
+                wsPort = _configuration["WebSocketSettings:Port"] ?? "8181";
+            }
+
             var wsHost = _configuration["WebSocketSettings:Host"] ?? "0.0.0.0";
-            var wsPort = _configuration["WebSocketSettings:Port"] ?? "8181";
             var connectionString = $"ws://{wsHost}:{wsPort}/ws";
 
             _server = new WebSocketServer(connectionString)
