@@ -26,7 +26,7 @@ namespace MyIoTProject.Presentation.Services
 
         public Task StartAsync(CancellationToken cancellationToken)
         {
-            // 1. Read container PORT or use 8181 if missing
+            // Read container PORT or use 8181 if missing
             var envPort = Environment.GetEnvironmentVariable("PORT");
             if (!int.TryParse(envPort, out var port))
             {
@@ -38,7 +38,7 @@ namespace MyIoTProject.Presentation.Services
                 }
             }
 
-            // 2. Build Fleck URL: e.g. "ws://0.0.0.0:10000/ws"
+            // Build Fleck URL: e.g. "ws://0.0.0.0:10000/ws"
             var host = _configuration["WebSocketSettings:Host"];
             if (string.IsNullOrWhiteSpace(host))
             {
@@ -46,7 +46,7 @@ namespace MyIoTProject.Presentation.Services
             }
             var connectionString = $"ws://{host}:{port}/ws";
 
-            // 3. Start Fleck on that port
+            // Start Fleck on that port
             _server = new WebSocketServer(connectionString)
             {
                 RestartAfterListenError = true
@@ -83,7 +83,7 @@ namespace MyIoTProject.Presentation.Services
                 };
             });
 
-            // 4. Subscribe to MQTT events and broadcast
+            // Subscribe to MQTT events and broadcast
             _mqttService.ReadingReceived    += OnMqttReading;
             _mqttService.CommandAckReceived += OnMqttAck;
             _mqttService.ConfigReceived     += OnMqttConfig;

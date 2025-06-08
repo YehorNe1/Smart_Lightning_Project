@@ -14,7 +14,7 @@ namespace MyIoTProject.Presentation
     {
         public static void Main(string[] args)
         {
-            // We build a host without Kestrel, just to run our Fleck WebSocket server.
+            // Fleck WebSocket server
             var builder = Host.CreateDefaultBuilder(args);
 
             builder.ConfigureAppConfiguration((context, config) =>
@@ -29,7 +29,7 @@ namespace MyIoTProject.Presentation
             {
                 var cfg = context.Configuration;
 
-                // 1. Register MongoDB repository
+                // Register MongoDB repository
                 services.AddScoped<ISensorReadingRepository>(sp =>
                 {
                     // Get connection string from ENV or settings
@@ -40,10 +40,10 @@ namespace MyIoTProject.Presentation
                     return new SensorReadingRepository(mongoUri, dbName, colName);
                 });
 
-                // 2. Register sensor service
+                // Register sensor service
                 services.AddScoped<SensorReadingService>();
 
-                // 3. Register MQTT client
+                // Register MQTT client
                 services.AddSingleton<MqttClientService>(sp =>
                 {
                     var mqttHost = cfg["MqttSettings:Broker"]!;
@@ -56,11 +56,11 @@ namespace MyIoTProject.Presentation
                     return new MqttClientService(mqttHost, mqttPort, mqttUser, mqttPass, sensorSvc);
                 });
 
-                // 4. Register Fleck WebSocket server as a hosted service
+                // Register Fleck WebSocket server as a hosted service
                 services.AddHostedService<WebSocketServerService>();
             });
 
-            // Run the host (starts Fleck)
+            // Run the host Fleck
             builder.Build().Run();
         }
     }
