@@ -4,8 +4,8 @@ using Microsoft.Extensions.DependencyInjection;
 using Microsoft.Extensions.Hosting;
 using MyIoTProject.Application.Services;
 using MyIoTProject.Core.Interfaces;
-using MyIoTProject.Infrastructure.Mqtt;
 using MyIoTProject.Infrastructure.Repositories;
+using MyIoTProject.Infrastructure.Mqtt;
 using MyIoTProject.Presentation.Services;
 
 namespace MyIoTProject.Presentation
@@ -14,54 +14,50 @@ namespace MyIoTProject.Presentation
     {
         public static void Main(string[] args)
         {
-            // Fleck WebSocket server
-            var builder = Host.CreateDefaultBuilder(args);
-
-            builder.ConfigureAppConfiguration((context, config) =>
-            {
-                // Load appsettings.json and environment variables
-                config.AddJsonFile("appsettings.json", optional: false, reloadOnChange: true)
-                      .AddJsonFile("appsettings.Development.json", optional: true, reloadOnChange: true)
-                      .AddEnvironmentVariables();
-            });
-
-            builder.ConfigureServices((context, services) =>
-            {
-                var cfg = context.Configuration;
-
-                // Register MongoDB repository
-                services.AddScoped<ISensorReadingRepository>(sp =>
+            // Build the host with default settings
+            var host = Host.CreateDefaultBuilder(args)
+                
+                // Load settings from JSON files and environment variables
+                .ConfigureAppConfiguration((ctx, cfg) =>
                 {
-                    // Get connection string from ENV or settings
-                    var mongoUri = Environment.GetEnvironmentVariable("MONGO_CONN")
-                                   ?? cfg["MongoSettings:ConnectionString"]!;
-                    var dbName = cfg["MongoSettings:DatabaseName"]!;
-                    var colName = cfg["MongoSettings:CollectionName"]!;
-                    return new SensorReadingRepository(mongoUri, dbName, colName);
-                });
-
-                // Register sensor service
-                services.AddScoped<SensorReadingService>();
-
-                // Register MQTT client
-                services.AddSingleton<MqttClientService>(sp =>
+                    cfg.AddJsonFile("appsettings.json", optional: false, reloadOnChange: true);
+                    cfg.AddJsonFile("appsettings.Development.json", optional: true, reloadOnChange: true);
+                    cfg.AddEnvironmentVariables();
+                })
+                
+                // Register services for dependency injection
+                .ConfigureServices((ctx, services) =>
                 {
-                    var mqttHost = cfg["MqttSettings:Broker"]!;
-                    var mqttPort = int.Parse(cfg["MqttSettings:Port"]!);
-                    var mqttUser = Environment.GetEnvironmentVariable("MQTT_USER")
-                                   ?? cfg["MqttSettings:User"]!;
-                    var mqttPass = Environment.GetEnvironmentVariable("MQTT_PASS")
-                                   ?? cfg["MqttSettings:Pass"]!;
-                    var sensorSvc = sp.GetRequiredService<SensorReadingService>();
-                    return new MqttClientService(mqttHost, mqttPort, mqttUser, mqttPass, sensorSvc);
-                });
+                    var config = ctx.Configuration;
 
-                // Register Fleck WebSocket server as a hosted service
-                services.AddHostedService<WebSocketServerService>();
-            });
+                    // MongoDB repository: one instance per scope
+                    services.AddScoped<ISensorReadingRepository>(sp =>
+                    {
+                        var uri   = Environment.GetEnvironmentVariable("MONGO_CONN")
+                                     ?? config["MongoSettings:ConnectionString"]!;
+                        var db    = config["MongoSettings:DatabaseName"]!;
+                        var col   = config["MongoSettings:CollectionName"]!;
+                        return new SensorReadingRepository(uri, db, col);
+                    });
 
-            // Run the host Fleck
-            builder.Build().Run();
+                    // Service to handle sensor readings: one instance per scope
+                    services.AddScoped<SensorReadingService>();
+
+                    // Register MQTT client as a singleton
+                    services.AddSingleton<MqttClientService>();
+
+                    // Use the same MQTT client instance as a hosted background service
+                    services.AddSingleton<IHostedService>(sp =>
+                        sp.GetRequiredService<MqttClientService>());
+
+                    // Register the Fleck WebSocket server as a hosted service
+                    services.AddHostedService<WebSocketServerService>();
+                })
+                
+                .Build();
+
+            // Run the host, starting all hosted services
+            host.Run();
         }
     }
 }
