@@ -14,7 +14,9 @@ namespace MyIoTProject.Presentation.Services
         private readonly IConfiguration _configuration;
         private readonly MqttClientService _mqttService;
         private WebSocketServer? _server;
-        private readonly ConcurrentBag<IWebSocketConnection> _clients = new();
+
+        // Track clients with their unique IDs
+        private readonly ConcurrentDictionary<string, IWebSocketConnection> _clients = new();
 
         public WebSocketServerService(
             IConfiguration configuration,
@@ -26,11 +28,9 @@ namespace MyIoTProject.Presentation.Services
 
         public Task StartAsync(CancellationToken cancellationToken)
         {
-            // Read container PORT or use 8181 if missing
             var envPort = Environment.GetEnvironmentVariable("PORT");
             if (!int.TryParse(envPort, out var port))
             {
-                // if no PORT env, fallback to appsettings or 8181
                 var portString = _configuration["WebSocketSettings:Port"];
                 if (!int.TryParse(portString, out port))
                 {
@@ -38,15 +38,14 @@ namespace MyIoTProject.Presentation.Services
                 }
             }
 
-            // Build Fleck URL: e.g. "ws://0.0.0.0:10000/ws"
             var host = _configuration["WebSocketSettings:Host"];
             if (string.IsNullOrWhiteSpace(host))
             {
                 host = "0.0.0.0";
             }
+
             var connectionString = $"ws://{host}:{port}/ws";
 
-            // Start Fleck on that port
             _server = new WebSocketServer(connectionString)
             {
                 RestartAfterListenError = true
@@ -54,36 +53,36 @@ namespace MyIoTProject.Presentation.Services
 
             _server.Start(socket =>
             {
+                // Generate unique ID for the client
+                var clientId = Guid.NewGuid().ToString();
+
                 socket.OnOpen = () =>
                 {
-                    // client just connected
-                    Console.WriteLine("new client connected");
-                    _clients.Add(socket);
+                    _clients[clientId] = socket;
+                    Console.WriteLine($"Client connected: {clientId}");
                 };
 
                 socket.OnClose = () =>
                 {
-                    // client just disconnected
-                    Console.WriteLine("client disconnected");
-                    _clients.TryTake(out _);
+                    _clients.TryRemove(clientId, out _);
+                    Console.WriteLine($"Client disconnected: {clientId}");
                 };
 
                 socket.OnMessage = message =>
                 {
-                    // send message from WebSocket client to MQTT
-                    Console.WriteLine("got from WS: " + message);
+                    Console.WriteLine($"Received from {clientId}: {message}");
                     try
                     {
                         _mqttService.PublishCommand(message);
                     }
                     catch (Exception ex)
                     {
-                        Console.WriteLine("error sending to MQTT: " + ex.Message);
+                        Console.WriteLine($"Error sending to MQTT from {clientId}: {ex.Message}");
                     }
                 };
             });
 
-            // Subscribe to MQTT events and broadcast
+            // Subscribe to MQTT messages
             _mqttService.ReadingReceived    += OnMqttReading;
             _mqttService.CommandAckReceived += OnMqttAck;
             _mqttService.ConfigReceived     += OnMqttConfig;
@@ -94,7 +93,6 @@ namespace MyIoTProject.Presentation.Services
 
         private void OnMqttReading(object? sender, ReadingReceivedEventArgs e)
         {
-            // build JSON and send to all clients
             var json = "{\"light\":\"" + e.Light + "\",\"sound\":\"" + e.Sound + "\",\"motion\":\"" + e.Motion + "\"}";
             Broadcast(json);
         }
@@ -111,11 +109,14 @@ namespace MyIoTProject.Presentation.Services
 
         private void Broadcast(string msg)
         {
-            // send msg to every client still open
-            foreach (var client in _clients)
+            foreach (var kvp in _clients)
             {
+                var clientId = kvp.Key;
+                var client = kvp.Value;
+
                 if (client.IsAvailable)
                 {
+                    Console.WriteLine($"Sending to {clientId}: {msg}");
                     client.Send(msg);
                 }
             }
@@ -123,7 +124,6 @@ namespace MyIoTProject.Presentation.Services
 
         public Task StopAsync(CancellationToken cancellationToken)
         {
-            // unsubscribe from MQTT and stop Fleck
             _mqttService.ReadingReceived    -= OnMqttReading;
             _mqttService.CommandAckReceived -= OnMqttAck;
             _mqttService.ConfigReceived     -= OnMqttConfig;
